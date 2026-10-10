@@ -1,0 +1,216 @@
+"""
+ساخت چارت کندل استیک حرفه‌ای با تم تیره
+- کندل استیک + EMA20/50
+- سطوح حمایت و مقاومت
+- Volume Profile (POC, VAH, VAL)
+- خروجی: تصویر PNG برای پیوست پست
+"""
+import os
+import logging
+
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import mplfinance as mpf
+
+from analysis import (
+    candles_to_df, ema, key_levels, volume_profile, detect_liquidity_sweeps,
+)
+from data_fetcher import get_klines
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+log = logging.getLogger(__name__)
+
+OUTPUT_DIR = "charts"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+COLORS = {
+    "bg":       "#0d1117",
+    "grid":     "#1f2937",
+    "text":     "#c9d1d9",
+    "up":       "#26a69a",
+    "down":     "#ef5350",
+    "ema20":    "#fbbf24",
+    "ema50":    "#60a5fa",
+    "support":  "#22c55e",
+    "resist":   "#f97316",
+    "poc":      "#a855f7",
+    "va":       "#7c3aed",
+    "current":  "#ffffff",
+}
+
+
+def _mpf_style():
+    mc = mpf.make_marketcolors(
+        up=COLORS["up"],
+        down=COLORS["down"],
+        edge="inherit",
+        wick="inherit",
+        volume={"up": COLORS["up"], "down": COLORS["down"]},
+    )
+    style = mpf.make_mpf_style(
+        marketcolors=mc,
+        facecolor=COLORS["bg"],
+        figcolor=COLORS["bg"],
+        gridcolor=COLORS["grid"],
+        gridstyle="--",
+        gridaxis="both",
+        y_on_right=True,
+        rc={
+            "axes.labelcolor": COLORS["text"],
+            "xtick.color": COLORS["text"],
+            "ytick.color": COLORS["text"],
+            "axes.edgecolor": COLORS["grid"],
+            "font.size": 9,
+        },
+    )
+    return style
+
+
+def generate_chart(symbol, interval="4h", limit=150, score_data=None):
+    """ساخت چارت و ذخیره به صورت PNG"""
+    log.info(f"ساخت چارت {symbol}...")
+
+    candles = get_klines(symbol, interval, limit)
+    if not candles:
+        log.error(f"کندلی برای {symbol} دریافت نشد")
+        return None
+
+    df = candles_to_df(candles)
+
+    df["ema20"] = ema(df["close"], 20)
+    df["ema50"] = ema(df["close"], 50)
+
+    levels = key_levels(df)
+    vp = volume_profile(df)
+    sweeps = detect_liquidity_sweeps(df, lookback=20)
+
+    apds = [
+        mpf.make_addplot(df["ema20"], color=COLORS["ema20"], width=1.2),
+        mpf.make_addplot(df["ema50"], color=COLORS["ema50"], width=1.2),
+    ]
+
+    current_price = df["close"].iloc[-1]
+    change = ((df["close"].iloc[-1] / df["close"].iloc[-2]) - 1) * 100
+    title = f"{symbol}  |  ${current_price:,.4f}  ({change:+.2f}%)"
+
+    filename = f"{OUTPUT_DIR}/{symbol}_{interval}.png"
+
+    fig, axes = mpf.plot(
+        df,
+        type="candle",
+        style=_mpf_style(),
+        addplot=apds,
+        volume=True,
+        figsize=(12, 7),
+        title=title,
+        ylabel="Price",
+        ylabel_lower="Volume",
+        returnfig=True,
+        tight_layout=True,
+        warn_too_much_data=1000,
+    )
+
+    ax_main = axes[0]
+
+    # سطوح حمایت / مقاومت
+    for r in levels["resistances"]:
+        ax_main.axhline(r, color=COLORS["resist"], linestyle="--",
+                        linewidth=0.9, alpha=0.7)
+        ax_main.text(df.index[-1], r, f"  R {r:,.4f}",
+                     color=COLORS["resist"], fontsize=8, va="center")
+
+    for s in levels["supports"]:
+        ax_main.axhline(s, color=COLORS["support"], linestyle="--",
+                        linewidth=0.9, alpha=0.7)
+        ax_main.text(df.index[-1], s, f"  S {s:,.4f}",
+                     color=COLORS["support"], fontsize=8, va="center")
+
+    # Volume Profile
+    ax_main.axhline(vp["poc"], color=COLORS["poc"], linestyle=":",
+                    linewidth=1.2, alpha=0.9)
+    ax_main.text(df.index[-1], vp["poc"], f"  POC {vp['poc']:,.4f}",
+                 color=COLORS["poc"], fontsize=8, va="center")
+
+    ax_main.axhline(vp["vah"], color=COLORS["va"], linestyle=":",
+                    linewidth=0.8, alpha=0.6)
+    ax_main.axhline(vp["val"], color=COLORS["va"], linestyle=":",
+                    linewidth=0.8, alpha=0.6)
+
+    # علامت جارو نقدینگی
+    for sweep in sweeps[-2:]:
+        try:
+            t = pd.Timestamp(sweep["time"])
+            if t in df.index:
+                idx = df.index.get_loc(t)
+                marker = "v" if sweep["type"] == "bullish_sweep" else "^"
+                color = COLORS["up"] if sweep["type"] == "bullish_sweep" else COLORS["down"]
+                y = df["low"].iloc[idx] * 0.998 if sweep["type"] == "bullish_sweep" else df["high"].iloc[idx] * 1.002
+                ax_main.scatter(df.index[idx], y, marker=marker, s=80,
+                                color=color, zorder=5)
+        except Exception:
+            pass
+
+    # حد ضرر و امتیاز
+    if score_data:
+        sl = score_data.get("stop_loss")
+        score = score_data.get("score")
+        if sl:
+            ax_main.axhline(sl, color=COLORS["down"], linestyle="-.",
+                            linewidth=1.1, alpha=0.8)
+            ax_main.text(df.index[-1], sl, f"  SL {sl:,.4f}",
+                         color=COLORS["down"], fontsize=8, va="center")
+
+        if score is not None:
+            color = COLORS["up"] if score >= 60 else (
+                "#fbbf24" if score >= 40 else COLORS["down"])
+            ax_main.text(
+                0.02, 0.97, f"⭐ Score: {score}/100",
+                transform=ax_main.transAxes,
+                color=color, fontsize=11, fontweight="bold",
+                va="top", ha="left",
+                bbox=dict(boxstyle="round,pad=0.4",
+                          facecolor=COLORS["bg"],
+                          edgecolor=color, alpha=0.9),
+            )
+
+    # واترمارک
+    ax_main.text(
+        0.99, 0.02, "ViaChart",
+        transform=ax_main.transAxes,
+        color="#58a6ff", fontsize=11, fontweight="bold",
+        alpha=0.5, ha="right", va="bottom",
+    )
+
+    last_time = df.index[-1].strftime("%Y-%m-%d %H:%M UTC")
+    ax_main.text(
+        0.01, 0.02, last_time,
+        transform=ax_main.transAxes,
+        color=COLORS["text"], fontsize=7, alpha=0.6,
+        ha="left", va="bottom",
+    )
+
+    fig.savefig(filename, dpi=130, bbox_inches="tight",
+                facecolor=COLORS["bg"])
+    plt.close(fig)
+
+    log.info(f"✅ چارت ذخیره شد: {filename}")
+    return filename
+
+
+if __name__ == "__main__":
+    print("\n🧪 تست chart_generator روی BTCUSDT...\n")
+
+    from analysis import score_coin
+    candles = get_klines("BTCUSDT", "4h", 200)
+    df = candles_to_df(candles)
+    info = {"change_24h": 0, "volume_24h": 0}
+    score_data = score_coin(df, "BTCUSDT", info)
+
+    path = generate_chart("BTCUSDT", "4h", 150, score_data=score_data)
+    print(f"\n🖼️ فایل: {path}")
+    if path:
+        print(f"📁 حجم فایل: {os.path.getsize(path) / 1024:.1f} KB")
