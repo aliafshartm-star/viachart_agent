@@ -1,16 +1,14 @@
 """
 ساخت و ارسال پست حرفه‌ای به کانال تلگرام ViaChart
-قالب: بخش‌بندی شده، سئو-فرندلی، حرفه‌ای
+استفاده از HTML به جای Markdown برای پایداری بیشتر
 """
 import os
 import logging
-from datetime import datetime, timezone
 
 from telegram import Bot, InputFile
 from telegram.constants import ParseMode
 
-from llm_router import LLMRouter
-from news import get_all_news, format_news_for_llm
+from news import get_all_news
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -19,12 +17,7 @@ CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "@viachart_app")
 CHANNEL_HANDLE = "@viachart_app"
 
 
-# ============================================================
-# ابزارها
-# ============================================================
-
 def _fmt(p):
-    """فرمت قیمت بر اساس بزرگی عدد"""
     if p >= 1000:
         return f"${p:,.2f}"
     elif p >= 1:
@@ -36,7 +29,6 @@ def _fmt(p):
 
 
 def _pct(from_p, to_p):
-    """درصد تغییر"""
     if from_p == 0:
         return "0.0%"
     change = ((to_p - from_p) / from_p) * 100
@@ -45,7 +37,6 @@ def _pct(from_p, to_p):
 
 
 def _full_name(symbol):
-    """نام کامل کوین برای هشتگ"""
     mapping = {
         "BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana",
         "BNB": "BNB", "XRP": "Ripple", "ADA": "Cardano",
@@ -60,14 +51,10 @@ def _full_name(symbol):
 
 
 # ============================================================
-# قالب ثابت پست سیگنال
+# قالب سیگنال (HTML)
 # ============================================================
 
 def build_signal_post(a):
-    """
-    ساخت پست سیگنال با قالب ثابت حرفه‌ای
-    a = analysis data (خروجی score_coin)
-    """
     symbol_raw = a["symbol"]
     symbol = symbol_raw.replace("USDT", "")
     full_name = _full_name(symbol)
@@ -81,13 +68,11 @@ def build_signal_post(a):
     amd = a.get("amd", {})
     reasons = a.get("reasons", [])
 
-    # سطوح
     entry = price
     tp1 = price + atr_val * 1.5
     tp2 = price + atr_val * 3.0
     tp3 = price + atr_val * 5.0
 
-    # امتیاز کیفی
     if score >= 70:
         score_label = "🔥 قوی"
     elif score >= 50:
@@ -97,14 +82,12 @@ def build_signal_post(a):
     else:
         score_label = "⚪ کم"
 
-    # دلایل
     reason_lines = ""
     for r in reasons[:3]:
         reason_lines += f"🔹 {r}\n"
     if not reason_lines:
         reason_lines = "🔹 تحلیل تکنیکال در حال شکل‌گیری\n"
 
-    # فاز AMD
     phase = amd.get("phase", "")
     phase_fa = {
         "accumulation": "Accumulation (انباشت)",
@@ -113,44 +96,43 @@ def build_signal_post(a):
         "ranging": "Ranging (رنج)",
     }.get(phase, "تحلیل شده")
 
-    # خبر
     news = get_all_news()
     news_line = "خبر مهمی در دسترس نیست."
     if news:
         news_line = news[0]["title"][:140]
 
-    # ایموجی تغییر
     change_emoji = "📈" if change_24h >= 0 else "📉"
     change_sign = "+" if change_24h >= 0 else ""
 
-    post = f"""📈 **تحلیل ViaChart | {symbol}/USDT** ({tf})
+    # استفاده از <b> به جای **
+    post = f"""📈 <b>تحلیل ViaChart | {symbol}/USDT</b> ({tf})
 
-🎯 امتیاز تحلیلی: **{score}/100** {score_label}
-
-━━━━━━━━━━━━━━━
-📊 **وضعیت فعلی**
-━━━━━━━━━━━━━━━
-💰 قیمت: **{_fmt(price)}**
-{change_emoji} تغییر ۲۴ ساعت: **{change_sign}{change_24h:.2f}%**
-📊 RSI: **{rsi:.1f}** | فاز: {phase_fa}
+🎯 امتیاز تحلیلی: <b>{score}/100</b> {score_label}
 
 ━━━━━━━━━━━━━━━
-🎯 **نقاط کلیدی**
+📊 <b>وضعیت فعلی</b>
 ━━━━━━━━━━━━━━━
-✅ ورود (Entry): **{_fmt(entry)}**
-🛑 حد ضرر (SL): **{_fmt(sl)}** ({_pct(entry, sl)})
-
-🎯 **اهداف:**
-   🔸 TP1: **{_fmt(tp1)}** ({_pct(entry, tp1)})
-   🔸 TP2: **{_fmt(tp2)}** ({_pct(entry, tp2)})
-   🔸 TP3: **{_fmt(tp3)}** ({_pct(entry, tp3)})
+💰 قیمت: <b>{_fmt(price)}</b>
+{change_emoji} تغییر ۲۴ ساعت: <b>{change_sign}{change_24h:.2f}%</b>
+📊 RSI: <b>{rsi:.1f}</b> | فاز: {phase_fa}
 
 ━━━━━━━━━━━━━━━
-💡 **چرا این سیگنال؟**
+🎯 <b>نقاط کلیدی</b>
+━━━━━━━━━━━━━━━
+✅ ورود (Entry): <b>{_fmt(entry)}</b>
+🛑 حد ضرر (SL): <b>{_fmt(sl)}</b> ({_pct(entry, sl)})
+
+🎯 <b>اهداف:</b>
+   🔸 TP1: <b>{_fmt(tp1)}</b> ({_pct(entry, tp1)})
+   🔸 TP2: <b>{_fmt(tp2)}</b> ({_pct(entry, tp2)})
+   🔸 TP3: <b>{_fmt(tp3)}</b> ({_pct(entry, tp3)})
+
+━━━━━━━━━━━━━━━
+💡 <b>چرا این سیگنال؟</b>
 ━━━━━━━━━━━━━━━
 {reason_lines}
 ━━━━━━━━━━━━━━━
-📰 **خبر مهم**
+📰 <b>خبر مهم</b>
 ━━━━━━━━━━━━━━━
 {news_line}
 
@@ -160,21 +142,20 @@ def build_signal_post(a):
 
 📢 {CHANNEL_HANDLE}
 
-#ViaChart #{symbol} #{full_name} #Crypto #Signal #Analysis #Altcoins #Trading"""
+#ViaChart #{symbol} #{full_name} #Crypto #Signal #Analysis #Trading"""
 
     return post.strip()
 
 
 # ============================================================
-# قالب پست خبری
+# قالب خبری (HTML)
 # ============================================================
 
 def build_news_post(news_list):
-    """ساخت پست خبری با قالب ثابت"""
     if not news_list:
         return None
 
-    lines = ["🔔 **اخبار مهم کریپتو | Top Crypto News**\n"]
+    lines = ["🔔 <b>اخبار مهم کریپتو | Top Crypto News</b>\n"]
 
     for n in news_list[:5]:
         title = n["title"][:130]
@@ -192,44 +173,37 @@ def build_news_post(news_list):
 # ============================================================
 
 async def send_post(text, chart_path=None, disable_notification=False):
-    """ارسال پست به کانال"""
     bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
 
     try:
         if chart_path and os.path.exists(chart_path):
-            # اگه متن زیر ۱۰۲۴ کاراکتره، همه رو تو کپشن بذار
-            if len(text) <= 1024:
-                with open(chart_path, "rb") as f:
-                    await bot.send_photo(
-                        chat_id=CHANNEL_ID,
-                        photo=InputFile(f),
-                        caption=text,
-                        parse_mode=ParseMode.MARKDOWN,
-                        disable_notification=disable_notification,
-                    )
-                log.info("✅ پست با عکس (تک پیام) ارسال شد")
-            else:
-                # متن طولانی: عکس با کپشن کوتاه، بعد متن کامل
-                with open(chart_path, "rb") as f:
-                    await bot.send_photo(
-                        chat_id=CHANNEL_ID,
-                        photo=InputFile(f),
-                        caption=text[:1024],
-                        parse_mode=ParseMode.MARKDOWN,
-                        disable_notification=disable_notification,
-                    )
+            # عکس با کپشن (کپشن محدود به ۱۰۲۴ کاراکتر)
+            caption = text if len(text) <= 1024 else text[:1020] + "..."
+
+            with open(chart_path, "rb") as f:
+                await bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=InputFile(f),
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    disable_notification=disable_notification,
+                )
+            log.info("✅ پست با عکس ارسال شد")
+
+            # اگه متن طولانی‌تر بود، ادامه رو تو پیام بعدی
+            if len(text) > 1024:
                 await bot.send_message(
                     chat_id=CHANNEL_ID,
-                    text=text[1024:4096],
-                    parse_mode=ParseMode.MARKDOWN,
+                    text=text[1024:],
+                    parse_mode=ParseMode.HTML,
                     disable_notification=True,
                 )
-                log.info("✅ پست با عکس + ادامه ارسال شد")
         else:
+            # فقط متن
             await bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=text[:4096],
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 disable_notification=disable_notification,
             )
             log.info("✅ پست متنی ارسال شد")
@@ -245,7 +219,6 @@ async def send_post(text, chart_path=None, disable_notification=False):
 # ============================================================
 
 async def post_signal(analysis_data, chart_path):
-    """ساخت و ارسال پست سیگنال"""
     log.info(f"📝 ساخت پست سیگنال برای {analysis_data['symbol']}...")
     post = build_signal_post(analysis_data)
     log.info(f"\n{post}\n")
@@ -253,7 +226,6 @@ async def post_signal(analysis_data, chart_path):
 
 
 async def post_news():
-    """ساخت و ارسال پست خبری"""
     log.info("📰 ساخت پست خبری...")
     news = get_all_news()
     post = build_news_post(news)
