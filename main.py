@@ -1,6 +1,6 @@
 """
 ViaChart Agent - مغز اصلی
-- تحلیل ۱۰۰ ارز، انتخاب ۴ برتر، ارسال ۴ پست سیگنال
+- تحلیل ۱۰۰ ارز، انتخاب ۱ ارز برتر، ارسال ۱ پست سیگنال
 """
 import os
 import sys
@@ -18,17 +18,15 @@ from telegram_poster import post_signal
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
-# فایل ذخیره وضعیت ارزهای ارسال‌شده
 STATE_FILE = "state/last_sent.json"
 os.makedirs("state", exist_ok=True)
 
 # تنظیمات
 MIN_SCORE = 40          # حداقل امتیاز برای انتخاب
-TOP_N = 4               # تعداد ارزهای برتر
+TOP_N = 1               # ← فقط ۱ ارز برتر در هر اجرا
 INTERVAL = "4h"         # تایم‌فریم
 KLINE_LIMIT = 200       # تعداد کندل
-COOLDOWN_HOURS = 6      # جلوگیری از تکرار یه ارز تا ۶ ساعت
-SEND_DELAY = 20         # فاصله بین پست‌ها (ثانیه)
+COOLDOWN_HOURS = 12     # جلوگیری از تکرار یه ارز تا ۱۲ ساعت
 
 
 # ============================================================
@@ -95,10 +93,10 @@ def analyze_top_coins(limit=100):
 
             results.append(analysis)
 
-            if i % 10 == 0:
+            if i % 20 == 0:
                 log.info(f"   ... {i}/{len(symbols)} ارز تحلیل شد")
 
-            time.sleep(0.15)
+            time.sleep(0.12)
 
         except Exception as e:
             log.warning(f"   ⚠️ خطا در تحلیل {symbol}: {str(e)[:80]}")
@@ -108,29 +106,28 @@ def analyze_top_coins(limit=100):
     return results
 
 
-def select_top_picks(results, state, top_n=TOP_N):
-    """انتخاب بهترین ارزها با فیلتر امتیاز و cooldown"""
+def select_top_pick(results, state):
+    """انتخاب بهترین ارز با فیلتر امتیاز و cooldown"""
     candidates = [r for r in results if r["score"] >= MIN_SCORE]
     candidates = [r for r in candidates if not is_on_cooldown(state, r["symbol"])]
     candidates.sort(key=lambda x: x["score"], reverse=True)
 
-    top_picks = candidates[:top_n]
+    if not candidates:
+        return None
 
-    log.info(f"🎯 {len(top_picks)} ارز برتر انتخاب شد:")
-    for p in top_picks:
-        log.info(f"   • {p['symbol']} — امتیاز {p['score']}")
-
-    return top_picks
+    top_pick = candidates[0]
+    log.info(f"🎯 ارز برتر انتخاب شد: {top_pick['symbol']} — امتیاز {top_pick['score']}")
+    return top_pick
 
 
 # ============================================================
-# اجرای دسته‌ای: پست‌های سیگنال
+# اجرای اصلی
 # ============================================================
 
 async def run_signals():
-    """تحلیل ۱۰۰ ارز و ارسال ۴ پست سیگنال"""
+    """تحلیل ۱۰۰ ارز و ارسال ۱ پست سیگنال"""
     log.info("=" * 50)
-    log.info("🚀 شروع دسته سیگنال‌ها")
+    log.info("🚀 شروع ViaChart Agent")
     log.info("=" * 50)
 
     state = load_state()
@@ -140,40 +137,28 @@ async def run_signals():
         log.error("❌ لیست تحلیل خالیه")
         return
 
-    top_picks = select_top_picks(results, state, top_n=TOP_N)
-    if not top_picks:
+    pick = select_top_pick(results, state)
+    if not pick:
         log.warning("⚠️ هیچ ارزی شرایط انتخاب رو نداشت")
         return
 
-    sent_count = 0
-    for i, pick in enumerate(top_picks, 1):
-        symbol = pick["symbol"]
-        log.info(f"\n📤 [{i}/{len(top_picks)}] ارسال پست برای {symbol}...")
+    symbol = pick["symbol"]
+    log.info(f"\n📤 ارسال پست سیگنال برای {symbol}...")
 
-        try:
-            chart_path = generate_chart(
-                symbol, INTERVAL, 150, score_data=pick
-            )
-            if not chart_path:
-                log.error(f"   ❌ چارت ساخته نشد")
-                continue
+    try:
+        chart_path = generate_chart(symbol, INTERVAL, 150, score_data=pick)
+        if not chart_path:
+            log.error("❌ چارت ساخته نشد")
+            return
 
-            ok = await post_signal(pick, chart_path)
-            if ok:
-                mark_sent(state, symbol)
-                save_state(state)
-                sent_count += 1
-                log.info(f"   ✅ ارسال موفق")
+        ok = await post_signal(pick, chart_path)
+        if ok:
+            mark_sent(state, symbol)
+            save_state(state)
+            log.info(f"✅ ارسال موفق: {symbol}")
 
-            if i < len(top_picks):
-                log.info(f"   ⏳ انتظار {SEND_DELAY} ثانیه...")
-                await asyncio.sleep(SEND_DELAY)
-
-        except Exception as e:
-            log.error(f"   ❌ خطا در {symbol}: {e}")
-            continue
-
-    log.info(f"\n✅ {sent_count} پست سیگنال ارسال شد")
+    except Exception as e:
+        log.error(f"❌ خطا در {symbol}: {e}")
 
 
 # ============================================================
@@ -181,23 +166,11 @@ async def run_signals():
 # ============================================================
 
 def main():
-    mode = "signals"
-
-    if len(sys.argv) > 1:
-        mode = sys.argv[1].lower()
-
-    log.info(f"🎬 ViaChart Agent — حالت: {mode}")
+    log.info("🎬 ViaChart Agent")
 
     try:
-        if mode == "signals":
-            asyncio.run(run_signals())
-        else:
-            log.error(f"❌ حالت نامعتبر: {mode}")
-            log.info("استفاده: python main.py signals")
-            sys.exit(1)
-
+        asyncio.run(run_signals())
         log.info("🎉 اجرا با موفقیت تمام شد")
-
     except Exception as e:
         log.error(f"❌ خطای کلی: {e}", exc_info=True)
         sys.exit(1)
