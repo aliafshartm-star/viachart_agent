@@ -1,6 +1,7 @@
 """
 ساخت و ارسال پست حرفه‌ای به کانال تلگرام ViaChart
-استفاده از HTML به جای Markdown برای پایداری بیشتر
+- قالب سیگنال: بخش‌بندی شده، حرفه‌ای
+- قالب خبر: دوزبانه با LLM
 """
 import os
 import logging
@@ -8,6 +9,7 @@ import logging
 from telegram import Bot, InputFile
 from telegram.constants import ParseMode
 
+from llm_router import LLMRouter
 from news import get_all_news
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -16,6 +18,10 @@ log = logging.getLogger(__name__)
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "@viachart_app")
 CHANNEL_HANDLE = "@viachart_app"
 
+
+# ============================================================
+# ابزارها
+# ============================================================
 
 def _fmt(p):
     if p >= 1000:
@@ -104,7 +110,6 @@ def build_signal_post(a):
     change_emoji = "📈" if change_24h >= 0 else "📉"
     change_sign = "+" if change_24h >= 0 else ""
 
-    # استفاده از <b> به جای **
     post = f"""📈 <b>تحلیل ViaChart | {symbol}/USDT</b> ({tf})
 
 🎯 امتیاز تحلیلی: <b>{score}/100</b> {score_label}
@@ -148,24 +153,66 @@ def build_signal_post(a):
 
 
 # ============================================================
-# قالب خبری (HTML)
+# قالب خبری (دوزبانه با LLM)
 # ============================================================
 
 def build_news_post(news_list):
+    """ساخت پست خبری دوزبانه با LLM"""
     if not news_list:
         return None
 
-    lines = ["🔔 <b>اخبار مهم کریپتو | Top Crypto News</b>\n"]
+    router = LLMRouter()
 
-    for n in news_list[:5]:
-        title = n["title"][:130]
-        source = n.get("source", "Crypto")
-        lines.append(f"▫️ {title}\n   ─ {source}\n")
+    # اخبار رو آماده کن
+    news_text = ""
+    for i, n in enumerate(news_list[:7], 1):
+        news_text += f"{i}. {n['title']} ({n.get('source', 'Crypto')})\n"
 
-    lines.append(f"📢 {CHANNEL_HANDLE}\n")
-    lines.append("#ViaChart #Crypto #News #Blockchain")
+    system = (
+        "You are a professional crypto news editor for the Persian/English Telegram channel ViaChart. "
+        "You translate and summarize crypto news bilingually. "
+        "Output ONLY the formatted post. No extra text, no explanations."
+    )
 
-    return "\n".join(lines)
+    prompt = f"""اخبار زیر رو به یک پست دوزبانه (English + فارسی) تبدیل کن.
+
+📰 **اخبار خام:**
+{news_text}
+
+📝 **قالب خروجی (دقیقاً همین ساختار):**
+
+🔔 <b>اخبار مهم کریپتو | Top Crypto News</b>
+
+1️⃣ <b>[English summary - max 1 line]</b>
+[ترجمه فارسی - max 1 line]
+
+2️⃣ <b>[English summary]</b>
+[ترجمه فارسی]
+
+3️⃣ <b>[English summary]</b>
+[ترجمه فارسی]
+
+4️⃣ <b>[English summary]</b>
+[ترجمه فارسی]
+
+5️⃣ <b>[English summary]</b>
+[ترجمه فارسی]
+
+📢 @viachart_app
+
+#ViaChart #Crypto #News #Blockchain
+
+---
+قواعد مهم:
+- از بین اخبار، ۵ خبر **مهم‌تر** رو انتخاب کن (BTC, ETH, SEC, ETF, whale اولویت دارن)
+- هر خبر: یک خط انگلیسی خلاصه + یک خط فارسی
+- از <b>...</b> برای bold استفاده کن (نه **)
+- فارسی روان و خبری بنویس
+- فقط خروجی نهایی، بدون توضیح اضافه
+- کل پست زیر ۱۰۰۰ کاراکتر باشه"""
+
+    post = router.generate(prompt, system=system, max_tokens=1500)
+    return post.strip()
 
 
 # ============================================================
@@ -177,7 +224,6 @@ async def send_post(text, chart_path=None, disable_notification=False):
 
     try:
         if chart_path and os.path.exists(chart_path):
-            # عکس با کپشن (کپشن محدود به ۱۰۲۴ کاراکتر)
             caption = text if len(text) <= 1024 else text[:1020] + "..."
 
             with open(chart_path, "rb") as f:
@@ -190,7 +236,6 @@ async def send_post(text, chart_path=None, disable_notification=False):
                 )
             log.info("✅ پست با عکس ارسال شد")
 
-            # اگه متن طولانی‌تر بود، ادامه رو تو پیام بعدی
             if len(text) > 1024:
                 await bot.send_message(
                     chat_id=CHANNEL_ID,
@@ -199,7 +244,6 @@ async def send_post(text, chart_path=None, disable_notification=False):
                     disable_notification=True,
                 )
         else:
-            # فقط متن
             await bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=text[:4096],
@@ -226,10 +270,11 @@ async def post_signal(analysis_data, chart_path):
 
 
 async def post_news():
-    log.info("📰 ساخت پست خبری...")
+    log.info("📰 ساخت پست خبری دوزبانه...")
     news = get_all_news()
     post = build_news_post(news)
     if post:
+        log.info(f"\n{post}\n")
         return await send_post(post, chart_path=None)
     return False
 
@@ -258,7 +303,7 @@ if __name__ == "__main__":
         print("\n📤 ارسال پست سیگنال...")
         await post_signal(analysis, chart)
 
-        print("\n📤 ارسال پست خبری...")
+        print("\n📤 ارسال پست خبری دوزبانه...")
         await post_news()
 
     asyncio.run(test())
