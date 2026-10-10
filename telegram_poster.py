@@ -1,5 +1,7 @@
 """
 ساخت و ارسال پست حرفه‌ای به کانال تلگرام ViaChart
+- قالب سیگنال: بخش‌بندی شده
+- قالب خبر: وضعیت بازار + ۲ خبر مهم (دوزبانه)
 """
 import os
 import logging
@@ -48,6 +50,61 @@ def _full_name(symbol):
         "SUI": "Sui", "SEI": "Sei", "INJ": "Injective",
     }
     return mapping.get(symbol, symbol)
+
+
+# ============================================================
+# ترجمه ساده (فقط فارسی، بدون افکار LLM)
+# ============================================================
+
+def _translate_to_farsi(router, english_text):
+    """ترجمه یه جمله انگلیسی به فارسی — خروجی خالص"""
+    system = "You are an English to Persian translator."
+    prompt = (
+        "Translate the following English sentence to Persian (Farsi). "
+        "Output ONLY the Persian translation, nothing else. "
+        "Do not include English, explanations, notes, or quotes.\n\n"
+        "English: " + english_text + "\n\n"
+        "Persian:"
+    )
+    try:
+        result = router.generate(prompt, system=system, max_tokens=200).strip()
+    except Exception as e:
+        log.warning(f"ترجمه ناموفق: {e}")
+        return "—"
+
+    # پاک‌سازی: فقط خطوط فارسی
+    lines = result.split("\n")
+    fa_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # حذف خطوطی که با "English:" یا "Persian:" شروع میشن
+        low = line.lower()
+        if low.startswith("english") or low.startswith("persian") or low.startswith("translation"):
+            # اگه بعد از کولن چیز فارسی داشت، نگهش دار
+            if ":" in line:
+                after = line.split(":", 1)[1].strip()
+                if after:
+                    line = after
+                else:
+                    continue
+            else:
+                continue
+
+        # حذف کاراکترهای اضافی
+        line = line.strip('"').strip("'").strip("«»").strip()
+
+        # چک کن اکثرش فارسی باشه
+        fa_chars = sum(1 for c in line if '\u0600' <= c <= '\u06FF')
+        if fa_chars >= 3:
+            fa_lines.append(line)
+
+    if not fa_lines:
+        return "—"
+
+    result = " ".join(fa_lines).strip()
+    return result
 
 
 # ============================================================
@@ -105,40 +162,48 @@ def build_signal_post(a):
     change_emoji = "📈" if change_24h >= 0 else "📉"
     change_sign = "+" if change_24h >= 0 else ""
 
-    post = (
-        "📈 <b>تحلیل ViaChart | " + symbol + "/USDT</b> (" + tf + ")\n\n"
-        "🎯 امتیاز تحلیلی: <b>" + str(score) + "/100</b> " + score_label + "\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "📊 <b>وضعیت فعلی</b>\n"
-        "━━━━━━━━━━━━━━━\n"
-        "💰 قیمت: <b>" + _fmt(price) + "</b>\n"
-        + change_emoji + " تغییر ۲۴ ساعت: <b>" + change_sign + f"{change_24h:.2f}" + "%</b>\n"
-        "📊 RSI: <b>" + f"{rsi:.1f}" + "</b> | فاز: " + phase_fa + "\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "🎯 <b>نقاط کلیدی</b>\n"
-        "━━━━━━━━━━━━━━━\n"
-        "✅ ورود (Entry): <b>" + _fmt(entry) + "</ TPb>\n"
-        "🛑 حد ضرر (SL): <b>" + _fmt(sl) + "</2b> (" + _pct(entry, sl) + ")\n\n"
-        "🎯 <b>:اهداف:</b>\n"
-        "   🔸 TP1: <b>" + _fmt(t <p1) + "</b> (" + _pct(entry, tp1) + ")\n"
-        "   🔸b>" + _fmt(tp2) + "</b> (" + _pct(entry, tp2) + ")\n"
-        "   🔸 TP3: <b>" + _fmt(tp3) + "</b> (" + _pct(entry, tp3) + ")\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "💡 <b>چرا این سیگنال؟</b>\n"
-        "━━━━━━━━━━━━━━━\n"
-        + reason_lines + "\n"
-        "━━━━━━━━━━━━━━━\n"
-        "📰 <b>خبر مهم</b>\n"
-        "━━━━━━━━━━━━━━━\n"
-        + news_line + "\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "🛡️ مدیریت ریسک: حداکثر ۱٪ در هر معامله\n"
-        "⚠️ توصیه مالی نیست — DYOR\n\n"
-        "📢 " + CHANNEL_HANDLE + "\n\n"
-        "#ViaChart #" + symbol + " #" + full_name + " #Crypto #Signal #Analysis #Trading"
-    )
+    parts = []
+    parts.append("📈 <b>تحلیل ViaChart | " + symbol + "/USDT</b> (" + tf + ")")
+    parts.append("")
+    parts.append("🎯 امتیاز تحلیلی: <b>" + str(score) + "/100</b> " + score_label)
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("📊 <b>وضعیت فعلی</b>")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("💰 قیمت: <b>" + _fmt(price) + "</b>")
+    parts.append(change_emoji + " تغییر ۲۴ ساعت: <b>" + change_sign + f"{change_24h:.2f}%</b>")
+    parts.append("📊 RSI: <b>" + f"{rsi:.1f}" + "</b> | فاز: " + phase_fa)
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("🎯 <b>نقاط کلیدی</b>")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("✅ ورود (Entry): <b>" + _fmt(entry) + "</b>")
+    parts.append("🛑 حد ضرر (SL): <b>" + _fmt(sl) + "</b> (" + _pct(entry, sl) + ")")
+    parts.append("")
+    parts.append("🎯 <b>اهداف:</b>")
+    parts.append("   🔸 TP1: <b>" + _fmt(tp1) + "</b> (" + _pct(entry, tp1) + ")")
+    parts.append("   🔸 TP2: <b>" + _fmt(tp2) + "</b> (" + _pct(entry, tp2) + ")")
+    parts.append("   🔸 TP3: <b>" + _fmt(tp3) + "</b> (" + _pct(entry, tp3) + ")")
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("💡 <b>چرا این سیگنال؟</b>")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append(reason_lines.rstrip())
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("📰 <b>خبر مهم</b>")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append(news_line)
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("🛡️ مدیریت ریسک: حداکثر ۱٪ در هر معامله")
+    parts.append("⚠️ توصیه مالی نیست — DYOR")
+    parts.append("")
+    parts.append("📢 " + CHANNEL_HANDLE)
+    parts.append("")
+    parts.append("#ViaChart #" + symbol + " #" + full_name + " #Crypto #Signal #Analysis #Trading")
 
-    return post.strip()
+    return "\n".join(parts)
 
 
 # ============================================================
@@ -146,7 +211,6 @@ def build_signal_post(a):
 # ============================================================
 
 def build_news_post(news_list):
-    """ساخت پست وضعیت بازار + ۲ خبر مهم"""
     from data_fetcher import get_top_symbols, get_fear_greed_index
 
     router = LLMRouter()
@@ -162,7 +226,7 @@ def build_news_post(news_list):
             elif c["symbol"] == "ETHUSDT":
                 eth = c
     except Exception as e:
-        log.warning(f"خطا در دریافت وضعیت بازار: {e}")
+        log.warning(f"خطا در وضعیت بازار: {e}")
 
     fng_value = 50
     fng_label_en = "Neutral"
@@ -195,21 +259,20 @@ def build_news_post(news_list):
     if btc:
         e = trend_emoji(btc["change_24h"])
         s = "+" if btc["change_24h"] >= 0 else ""
-        btc_line = "₿ BTC: <b>$" + f"{btc['price']:,.0f}" + "</b> " + e + " " + s + f"{btc['change_24h']:.2f}" + "%"
+        btc_line = "₿ BTC: <b>$" + f"{btc['price']:,.0f}" + "</b> " + e + " " + s + f"{btc['change_24h']:.2f}%"
     else:
-        btc_line = "₿ BTC: داده‌ای موجود نیست"
+        btc_line = "₿ BTC: —"
 
     if eth:
         e = trend_emoji(eth["change_24h"])
         s = "+" if eth["change_24h"] >= 0 else ""
-        eth_line = "Ξ ETH: <b>$" + f"{eth['price']:,.0f}" + "</b> " + e + " " + s + f"{eth['change_24h']:.2f}" + "%"
+        eth_line = "Ξ ETH: <b>$" + f"{eth['price']:,.0f}" + "</b> " + e + " " + s + f"{eth['change_24h']:.2f}%"
     else:
-        eth_line = "Ξ ETH: داده‌ای موجود نیست"
+        eth_line = "Ξ ETH: —"
 
     # --- انتخاب ۲ خبر مهم ---
-    keywords = ["bitcoin", "btc", "ethereum", "eth", "etf", "sec", "market",
-                "fed", "rate", "inflation", "whale", "liquidity", "regulation",
-                "binance", "coinbase", "solana"]
+    keywords = ["bitcoin", "btc", "ethereum", "eth", "etf", "sec",
+                "market", "fed", "whale", "liquidity", "regulation"]
 
     relevant = []
     for n in news_list:
@@ -222,76 +285,42 @@ def build_news_post(news_list):
     if not relevant:
         relevant = news_list[:2]
 
-    news_text = ""
-    for i, n in enumerate(relevant, 1):
-        news_text += str(i) + ". " + n["title"][:140] + "\n"
+    # --- ترجمه جدا جدا ---
+    news_lines = []
+    for n in relevant[:2]:
+        en = n["title"][:130]
+        fa = _translate_to_farsi(router, en)
+        news_lines.append("▫️ <b>" + en + "</b>")
+        news_lines.append(fa)
+        news_lines.append("")
 
-    # --- ترجمه با LLM ---
-    system = (
-        "You are a bilingual crypto news editor for ViaChart. "
-        "Write in English and Persian (Farsi) ONLY. NEVER Arabic. "
-        "Be extremely concise. Output only the final post."
-    )
+    news_part = "\n".join(news_lines).rstrip()
 
-    prompt = (
-        "این ۲ خبر رو به فارسی روان ترجمه کن:\n\n"
-        + news_text + "\n\n"
-        "مثال دقیق خروجی (بدون placeholder):\n\n"
-        "▫️ <b>Bitcoin ETF sees record weekly inflows.</b>\n"
-        "ورودی هفتگی رکوردی به ETF بیت‌کوین ثبت شد.\n\n"
-        "▫️ <b>SEC delays spot ETF decision.</b>\n"
-        "کمیسیون SEC تصمیم درباره ETF اسپات را به تعویق انداخت.\n\n"
-        "قواعد قطعی:\n"
-        "- دقیقاً ۲ خبر (نه بیشتر)\n"
-        "- هر خبر: یک خط انگلیسی با <b> + یک خط فارسی زیرش\n"
-        "- فارسی روان (نه عربی، نه کلمه به کلمه)\n"
-        "- هیچ placeholder، براکت []، Note، توضیح اضافه نکن\n"
-        "- هر خط زیر ۱۲ کلمه"
-    )
+    parts = []
+    parts.append("🔔 <b>وضعیت بازار کریپتو | Market Update</b>")
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("💰 <b>وضعیت لحظه‌ای</b>")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append(btc_line)
+    parts.append(eth_line)
+    parts.append("😱 شاخص ترس و طمع: <b>" + str(fng_value) + "</b> (" + fng_fa + ")")
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("📰 <b>اخبار مهم</b>")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append(news_part)
+    parts.append("")
+    parts.append("━━━━━━━━━━━━━━━")
+    parts.append("📢 " + CHANNEL_HANDLE)
+    parts.append("")
+    parts.append("#ViaChart #Crypto #Bitcoin #Market #News")
 
-    news_part = router.generate(prompt, system=system, max_tokens=400).strip()
-
-    # --- پاک‌سازی ---
-    bad_markers = [
-        "[English", "[Farsi", "[فارسی", "[ترجمه",
-        "Note:", "توجه:", "Please note", "Placeholder",
-        "ترجمه فارسی با استفاده",
-    ]
-    clean_lines = []
-    for line in news_part.split("\n"):
-        skip = False
-        for m in bad_markers:
-            if m in line:
-                skip = True
-                break
-        if not skip:
-            clean_lines.append(line)
-
-    news_part = "\n".join(clean_lines).strip()
-
-    # --- پست نهایی ---
-    post = (
-        "🔔 <b>وضعیت بازار کریپتو | Market Update</b>\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "💰 <b>وضعیت لحظه‌ای</b>\n"
-        "━━━━━━━━━━━━━━━\n"
-        + btc_line + "\n"
-        + eth_line + "\n"
-        + "😱 شاخص ترس و طمع: <b>" + str(fng_value) + "</b> (" + fng_fa + ")\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "📰 <b>اخبار مهم</b>\n"
-        "━━━━━━━━━━━━━━━\n"
-        + news_part + "\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "📢 " + CHANNEL_HANDLE + "\n\n"
-        "#ViaChart #Crypto #Bitcoin #Market #News"
-    )
-
-    return post.strip()
+    return "\n".join(parts)
 
 
 # ============================================================
-# ارسال به کانال
+# ارسال
 # ============================================================
 
 async def send_post(text, chart_path=None, disable_notification=False):
@@ -300,7 +329,6 @@ async def send_post(text, chart_path=None, disable_notification=False):
     try:
         if chart_path and os.path.exists(chart_path):
             caption = text if len(text) <= 1024 else text[:1020] + "..."
-
             with open(chart_path, "rb") as f:
                 await bot.send_photo(
                     chat_id=CHANNEL_ID,
@@ -326,16 +354,11 @@ async def send_post(text, chart_path=None, disable_notification=False):
                 disable_notification=disable_notification,
             )
             log.info("✅ پست متنی ارسال شد")
-
         return True
     except Exception as e:
         log.error(f"❌ خطا در ارسال: {e}")
         return False
 
-
-# ============================================================
-# توابع راحتی
-# ============================================================
 
 async def post_signal(analysis_data, chart_path):
     log.info(f"📝 ساخت پست سیگنال برای {analysis_data['symbol']}...")
@@ -353,10 +376,6 @@ async def post_news():
         return await send_post(post, chart_path=None)
     return False
 
-
-# ============================================================
-# تست
-# ============================================================
 
 if __name__ == "__main__":
     import asyncio
