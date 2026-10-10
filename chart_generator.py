@@ -1,9 +1,5 @@
 """
 ساخت چارت کندل استیک حرفه‌ای با تم تیره
-- کندل استیک + EMA20/50
-- سطوح حمایت و مقاومت
-- Volume Profile (POC, VAH, VAL)
-- خروجی: تصویر PNG برای پیوست پست
 """
 import os
 import logging
@@ -26,7 +22,6 @@ log = logging.getLogger(__name__)
 OUTPUT_DIR = "charts"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
 COLORS = {
     "bg":       "#0d1117",
     "grid":     "#1f2937",
@@ -39,25 +34,19 @@ COLORS = {
     "resist":   "#f97316",
     "poc":      "#a855f7",
     "va":       "#7c3aed",
-    "current":  "#ffffff",
 }
 
 
 def _mpf_style():
     mc = mpf.make_marketcolors(
-        up=COLORS["up"],
-        down=COLORS["down"],
-        edge="inherit",
-        wick="inherit",
+        up=COLORS["up"], down=COLORS["down"],
+        edge="inherit", wick="inherit",
         volume={"up": COLORS["up"], "down": COLORS["down"]},
     )
-    style = mpf.make_mpf_style(
+    return mpf.make_mpf_style(
         marketcolors=mc,
-        facecolor=COLORS["bg"],
-        figcolor=COLORS["bg"],
-        gridcolor=COLORS["grid"],
-        gridstyle="--",
-        gridaxis="both",
+        facecolor=COLORS["bg"], figcolor=COLORS["bg"],
+        gridcolor=COLORS["grid"], gridstyle="--", gridaxis="both",
         y_on_right=True,
         rc={
             "axes.labelcolor": COLORS["text"],
@@ -67,7 +56,6 @@ def _mpf_style():
             "font.size": 9,
         },
     )
-    return style
 
 
 def generate_chart(symbol, interval="4h", limit=150, score_data=None):
@@ -80,7 +68,6 @@ def generate_chart(symbol, interval="4h", limit=150, score_data=None):
         return None
 
     df = candles_to_df(candles)
-
     df["ema20"] = ema(df["close"], 20)
     df["ema50"] = ema(df["close"], 50)
 
@@ -100,39 +87,33 @@ def generate_chart(symbol, interval="4h", limit=150, score_data=None):
     filename = f"{OUTPUT_DIR}/{symbol}_{interval}.png"
 
     fig, axes = mpf.plot(
-        df,
-        type="candle",
-        style=_mpf_style(),
-        addplot=apds,
-        volume=True,
-        figsize=(12, 7),
-        title=title,
-        ylabel="Price",
-        ylabel_lower="Volume",
-        returnfig=True,
-        tight_layout=True,
+        df, type="candle", style=_mpf_style(),
+        addplot=apds, volume=True, figsize=(12, 7),
+        title=title, ylabel="Price", ylabel_lower="Volume",
+        returnfig=True, tight_layout=True,
         warn_too_much_data=1000,
     )
 
     ax_main = axes[0]
+    n = len(df)  # ← مهم: از ایندکس عددی استفاده می‌کنیم
 
     # سطوح حمایت / مقاومت
     for r in levels["resistances"]:
         ax_main.axhline(r, color=COLORS["resist"], linestyle="--",
                         linewidth=0.9, alpha=0.7)
-        ax_main.text(df.index[-1], r, f"  R {r:,.4f}",
+        ax_main.text(n + 0.5, r, f" R {r:,.4f}",
                      color=COLORS["resist"], fontsize=8, va="center")
 
     for s in levels["supports"]:
         ax_main.axhline(s, color=COLORS["support"], linestyle="--",
                         linewidth=0.9, alpha=0.7)
-        ax_main.text(df.index[-1], s, f"  S {s:,.4f}",
+        ax_main.text(n + 0.5, s, f" S {s:,.4f}",
                      color=COLORS["support"], fontsize=8, va="center")
 
     # Volume Profile
     ax_main.axhline(vp["poc"], color=COLORS["poc"], linestyle=":",
                     linewidth=1.2, alpha=0.9)
-    ax_main.text(df.index[-1], vp["poc"], f"  POC {vp['poc']:,.4f}",
+    ax_main.text(n + 0.5, vp["poc"], f" POC {vp['poc']:,.4f}",
                  color=COLORS["poc"], fontsize=8, va="center")
 
     ax_main.axhline(vp["vah"], color=COLORS["va"], linestyle=":",
@@ -140,17 +121,16 @@ def generate_chart(symbol, interval="4h", limit=150, score_data=None):
     ax_main.axhline(vp["val"], color=COLORS["va"], linestyle=":",
                     linewidth=0.8, alpha=0.6)
 
-    # علامت جارو نقدینگی
+    # علامت جارو نقدینگی (روی ایندکس عددی)
     for sweep in sweeps[-2:]:
         try:
             t = pd.Timestamp(sweep["time"])
             if t in df.index:
-                idx = df.index.get_loc(t)
+                idx = df.index.get_loc(t)  # ← این خودش عدد برمی‌گردونه
                 marker = "v" if sweep["type"] == "bullish_sweep" else "^"
                 color = COLORS["up"] if sweep["type"] == "bullish_sweep" else COLORS["down"]
                 y = df["low"].iloc[idx] * 0.998 if sweep["type"] == "bullish_sweep" else df["high"].iloc[idx] * 1.002
-                ax_main.scatter(df.index[idx], y, marker=marker, s=80,
-                                color=color, zorder=5)
+                ax_main.scatter(idx, y, marker=marker, s=80, color=color, zorder=5)
         except Exception:
             pass
 
@@ -161,14 +141,14 @@ def generate_chart(symbol, interval="4h", limit=150, score_data=None):
         if sl:
             ax_main.axhline(sl, color=COLORS["down"], linestyle="-.",
                             linewidth=1.1, alpha=0.8)
-            ax_main.text(df.index[-1], sl, f"  SL {sl:,.4f}",
+            ax_main.text(n + 0.5, sl, f" SL {sl:,.4f}",
                          color=COLORS["down"], fontsize=8, va="center")
 
         if score is not None:
             color = COLORS["up"] if score >= 60 else (
                 "#fbbf24" if score >= 40 else COLORS["down"])
             ax_main.text(
-                0.02, 0.97, f"⭐ Score: {score}/100",
+                0.02, 0.97, f"Score: {score}/100",
                 transform=ax_main.transAxes,
                 color=color, fontsize=11, fontweight="bold",
                 va="top", ha="left",
