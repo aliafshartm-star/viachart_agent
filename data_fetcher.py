@@ -7,7 +7,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
-BINANCE_API = "https://api.binance.com/api/v3"
+# endpoint عمومی Binance — بدون محدودیت جغرافیایی
+BINANCE_API = "https://data-api.binance.vision/api/v3"
 
 
 def get_top_symbols(limit=100):
