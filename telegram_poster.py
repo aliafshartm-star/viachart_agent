@@ -1,7 +1,7 @@
 """
 ساخت و ارسال پست حرفه‌ای به کانال تلگرام ViaChart
 - قالب سیگنال: بخش‌بندی شده، حرفه‌ای
-- قالب خبر: دوزبانه با LLM
+- قالب خبر: وضعیت بازار + ۲ خبر مهم (دوزبانه)
 """
 import os
 import logging
@@ -57,7 +57,7 @@ def _full_name(symbol):
 
 
 # ============================================================
-# قالب سیگنال (HTML)
+# قالب سیگنال
 # ============================================================
 
 def build_signal_post(a):
@@ -153,65 +153,141 @@ def build_signal_post(a):
 
 
 # ============================================================
-# قالب خبری (دوزبانه با LLM)
+# قالب خبر: وضعیت بازار + ۲ خبر مهم
 # ============================================================
 
 def build_news_post(news_list):
-    """ساخت پست خبری دوزبانه با LLM"""
-    if not news_list:
-        return None
+    """
+    ساخت پست خلاصه وضعیت بازار + ۲ خبر مهم
+    """
+    from data_fetcher import get_top_symbols, get_fear_greed_index
 
     router = LLMRouter()
 
-    # اخبار رو آماده کن
-    news_text = ""
-    for i, n in enumerate(news_list[:7], 1):
-        news_text += f"{i}. {n['title']} ({n.get('source', 'Crypto')})\n"
+    # --- ۱. وضعیت بازار ---
+    try:
+        top = get_top_symbols(limit=10)
+        btc = next((c for c in top if c["symbol"] == "BTCUSDT"), None)
+        eth = next((c for c in top if c["symbol"] == "ETHUSDT"), None)
+    except Exception:
+        btc, eth = None, None
 
+    try:
+        fng = get_fear_greed_index()
+    except Exception:
+        fng = {"value": 50, "label": "Neutral"}
+
+    fng_fa = {
+        "Extreme Fear": "ترس شدید",
+        "Fear": "ترس",
+        "Neutral": "خنثی",
+        "Greed": "طمع",
+        "Extreme Greed": "طمع شدید",
+    }.get(fng["label"], fng["label"])
+
+    def trend_emoji(change):
+        if change > 3:
+            return "🚀"
+        elif change > 0:
+            return "📈"
+        elif change > -3:
+            return "📉"
+        else:
+            return "🔻"
+
+    btc_line = "₿ BTC: داده‌ای موجود نیست"
+    if btc:
+        e = trend_emoji(btc["change_24h"])
+        s = "+" if btc["change_24h"] >= 0 else ""
+        btc_line = f"₿ BTC: <b>${btc['price']:,.0f}</b> {e} {s}{btc['change_24h']:.2f}%"
+
+    eth_line = "Ξ ETH: داده‌ای موجود نیست"
+    if eth:
+        e = trend_emoji(eth["change_24h"])
+        s = "+" if eth["change_24h"] >= 0 else ""
+        eth_line = f"Ξ ETH: <b>${eth['price']:,.0f}</b> {e} {s}{eth['change_24h']:.2f}%"
+
+    # --- ۲. انتخاب ۲ خبر مهم مرتبط با بازار ---
+    keywords = ["bitcoin", "btc", "ethereum", "eth", "etf", "sec", "market",
+                "fed", "rate", "inflation", "whale", "liquidity", "regulation",
+                "binance", "coinbase", "solana"]
+
+    relevant = []
+    for n in news_list:
+        title_lower = n["title"].lower()
+        if any(k in title_lower for k in keywords):
+            relevant.append(n)
+        if len(relevant) >= 2:
+            break
+
+    if not relevant:
+        relevant = news_list[:2]
+
+    news_text = ""
+    for i, n in enumerate(relevant, 1):
+        news_text += f"{i}. {n['title'][:140]}\n"
+
+    # --- ۳. ترجمه ۲ خبر با LLM ---
     system = (
-        "You are a professional crypto news editor for the Persian/English Telegram channel ViaChart. "
-        "You translate and summarize crypto news bilingually. "
-        "Output ONLY the formatted post. No extra text, no explanations."
+        "You are a bilingual crypto news editor for ViaChart. "
+        "You write in English and Persian (Farsi) ONLY. NEVER Arabic. "
+        "Be extremely concise and professional. Output only the final post."
     )
 
-    prompt = f"""اخبار زیر رو به یک پست دوزبانه (English + فارسی) تبدیل کن.
+    prompt = f"""این ۲ خبر رو به فارسی روان ترجمه کن:
 
-📰 **اخبار خام:**
 {news_text}
 
-📝 **قالب خروجی (دقیقاً همین ساختار):**
+مثال دقیق خروجی که باید تولید کنی (بدون هیچ placeholder):
 
-🔔 <b>اخبار مهم کریپتو | Top Crypto News</b>
+▫️ <b>Bitcoin ETF sees record weekly inflows.</b>
+ورودی هفتگی رکوردی به ETF بیت‌کوین ثبت شد.
 
-1️⃣ <b>[English summary - max 1 line]</b>
-[ترجمه فارسی - max 1 line]
+▫️ <b>SEC delays spot ETF decision.</b>
+کمیسیون SEC تصمیم درباره ETF اسپات را به تعویق انداخت.
 
-2️⃣ <b>[English summary]</b>
-[ترجمه فارسی]
+قواعد قطعی:
+- دقیقاً ۲ خبر (نه بیشتر)
+- هر خبر: یک خط انگلیسی (با <b>) + یک خط فارسی زیرش
+- فارسی روان و خبری (نه عربی، نه کلمه به کلمه)
+- هیچ placeholder، براکت []، Note، توضیح، تذکر اضافه نکن
+- هر خط زیر ۱۲ کلمه"""
 
-3️⃣ <b>[English summary]</b>
-[ترجمه فارسی]
+    news_part = router.generate(prompt, system=system, max_tokens=400).strip()
 
-4️⃣ <b>[English summary]</b>
-[ترجمه فارسی]
+    # پاک‌سازی
+    bad_markers = [
+        "[English", "[Farsi", "[فارسی", "[ترجمه",
+        "Note:", "توجه:", "Please note", "Placeholder",
+        "ترجمه فارسی با استفاده",
+    ]
+    clean_lines = []
+    for import line in news_part.split("\n"):
+        if any(m in line for m in bad_markers generate):
+            continue
+        clean_lines.append(line)
+    news_part = "\n".join(clean_lines).strip()
 
-5️⃣ <b>[English summary]</b>
-[ترجمه فارسی]
+   _ch # --- ۴. پست نهایی ---
+    post = f"""🔔 <b>وضعیت بازار کartریپتو | Market Update</b>
 
-📢 @viachart_app
+━━━━━━━━━━━━━━━
+💰 <b>وضعیت لحظه‌ای</b>
+━━━━━━━━━━━━━━━
+{btc_line}
+{eth_line}
+😱 شاخص ترس و طمع: <b>{fng['value']}</b> ({fng_fa})
 
-#ViaChart #Crypto #News #Blockchain
+━━━━━━━━━━━━━━━
+📰 <b>اخبار مهم</b>
+━━━━━━━━━━━━━━━
+{news_part}
 
----
-قواعد مهم:
-- از بین اخبار، ۵ خبر **مهم‌تر** رو انتخاب کن (BTC, ETH, SEC, ETF, whale اولویت دارن)
-- هر خبر: یک خط انگلیسی خلاصه + یک خط فارسی
-- از <b>...</b> برای bold استفاده کن (نه **)
-- فارسی روان و خبری بنویس
-- فقط خروجی نهایی، بدون توضیح اضافه
-- کل پست زیر ۱۰۰۰ کاراکتر باشه"""
+━━━━━━━━━━━━━━━
+📢 {CHANNEL_HANDLE}
 
-    post = router.generate(prompt, system=system, max_tokens=1500)
+#ViaChart #Crypto #Bitcoin #Market #News"""
+
     return post.strip()
 
 
@@ -270,7 +346,7 @@ async def post_signal(analysis_data, chart_path):
 
 
 async def post_news():
-    log.info("📰 ساخت پست خبری دوزبانه...")
+    log.info("📰 ساخت پست وضعیت بازار + اخبار...")
     news = get_all_news()
     post = build_news_post(news)
     if post:
@@ -287,23 +363,13 @@ if __name__ == "__main__":
     import asyncio
     from data_fetcher import get_klines
     from analysis import candles_to_df, score_coin
-    from chart_generator import generate_chart
+    from chart_generator
 
     async def test():
         print("\n🧪 تست telegram_poster...\n")
 
-        candles = get_klines("BTCUSDT", "4h", 200)
-        df = candles_to_df(candles)
-        info = {"change_24h": -1.2, "volume_24h": 0}
-        analysis = score_coin(df, "BTCUSDT", info)
-        analysis["interval"] = "4H"
-
-        chart = generate_chart("BTCUSDT", "4h", 150, score_data=analysis)
-
-        print("\n📤 ارسال پست سیگنال...")
-        await post_signal(analysis, chart)
-
-        print("\n📤 ارسال پست خبری دوزبانه...")
+        # فقط پست خبری
+        print("📤 ارسال پست خبری...")
         await post_news()
 
     asyncio.run(test())
