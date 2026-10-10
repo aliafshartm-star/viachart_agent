@@ -1,8 +1,6 @@
 """
 ViaChart Agent - مغز اصلی
-- حالت signals: تحلیل ۱۰۰ ارز، انتخاب ۴ برتر، ارسال ۴ پست سیگنال
-- حالت news: ارسال پست خبری دوزبانه
-- حالت all: هر دو
+- تحلیل ۱۰۰ ارز، انتخاب ۴ برتر، ارسال ۴ پست سیگنال
 """
 import os
 import sys
@@ -15,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from data_fetcher import get_top_symbols, get_klines
 from analysis import candles_to_df, score_coin
 from chart_generator import generate_chart
-from telegram_poster import post_signal, post_news
+from telegram_poster import post_signal
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -75,9 +73,7 @@ def mark_sent(state, symbol):
 # ============================================================
 
 def analyze_top_coins(limit=100):
-    """
-    تحلیل کامل ۱۰۰ ارز و برگرداندن لیست رتبه‌بندی‌شده
-    """
+    """تحلیل کامل ۱۰۰ ارز و برگرداندن لیست رتبه‌بندی‌شده"""
     log.info(f"📊 شروع تحلیل {limit} ارز...")
 
     symbols = get_top_symbols(limit=limit)
@@ -102,7 +98,6 @@ def analyze_top_coins(limit=100):
             if i % 10 == 0:
                 log.info(f"   ... {i}/{len(symbols)} ارز تحلیل شد")
 
-            # جلوگیری از rate limit Binance
             time.sleep(0.15)
 
         except Exception as e:
@@ -114,19 +109,11 @@ def analyze_top_coins(limit=100):
 
 
 def select_top_picks(results, state, top_n=TOP_N):
-    """
-    انتخاب بهترین ارزها با فیلتر امتیاز و cooldown
-    """
-    # فیلتر امتیاز
+    """انتخاب بهترین ارزها با فیلتر امتیاز و cooldown"""
     candidates = [r for r in results if r["score"] >= MIN_SCORE]
-
-    # حذف ارزهایی که تو cooldown هستن
     candidates = [r for r in candidates if not is_on_cooldown(state, r["symbol"])]
-
-    # مرتب‌سازی بر اساس امتیاز
     candidates.sort(key=lambda x: x["score"], reverse=True)
 
-    # انتخاب TOP_N
     top_picks = candidates[:top_n]
 
     log.info(f"🎯 {len(top_picks)} ارز برتر انتخاب شد:")
@@ -148,26 +135,22 @@ async def run_signals():
 
     state = load_state()
 
-    # تحلیل
     results = analyze_top_coins(limit=100)
     if not results:
         log.error("❌ لیست تحلیل خالیه")
         return
 
-    # انتخاب برترین‌ها
     top_picks = select_top_picks(results, state, top_n=TOP_N)
     if not top_picks:
         log.warning("⚠️ هیچ ارزی شرایط انتخاب رو نداشت")
         return
 
-    # ارسال پست برای هرکدوم
     sent_count = 0
     for i, pick in enumerate(top_picks, 1):
         symbol = pick["symbol"]
         log.info(f"\n📤 [{i}/{len(top_picks)}] ارسال پست برای {symbol}...")
 
         try:
-            # ساخت چارت
             chart_path = generate_chart(
                 symbol, INTERVAL, 150, score_data=pick
             )
@@ -175,7 +158,6 @@ async def run_signals():
                 log.error(f"   ❌ چارت ساخته نشد")
                 continue
 
-            # ارسال پست
             ok = await post_signal(pick, chart_path)
             if ok:
                 mark_sent(state, symbol)
@@ -183,7 +165,6 @@ async def run_signals():
                 sent_count += 1
                 log.info(f"   ✅ ارسال موفق")
 
-            # فاصله بین پست‌ها
             if i < len(top_picks):
                 log.info(f"   ⏳ انتظار {SEND_DELAY} ثانیه...")
                 await asyncio.sleep(SEND_DELAY)
@@ -196,37 +177,12 @@ async def run_signals():
 
 
 # ============================================================
-# اجرای دسته‌ای: پست خبری
-# ============================================================
-
-async def run_news():
-    """ارسال یه پست خبری دوزبانه"""
-    log.info("=" * 50)
-    log.info("📰 شروع دسته خبری")
-    log.info("=" * 50)
-
-    ok = await post_news()
-    if ok:
-        log.info("✅ پست خبری ارسال شد")
-    else:
-        log.error("❌ ارسال پست خبری ناموفق")
-
-
-# ============================================================
 # نقطه ورود
 # ============================================================
 
-async def run_all():
-    """اجرای هر دو حالت (سیگنال + خبر)"""
-    await run_news()
-    print()
-    await run_signals()
-
-
 def main():
-    mode = "all"
+    mode = "signals"
 
-    # پارامتر خط فرمان
     if len(sys.argv) > 1:
         mode = sys.argv[1].lower()
 
@@ -235,13 +191,9 @@ def main():
     try:
         if mode == "signals":
             asyncio.run(run_signals())
-        elif mode == "news":
-            asyncio.run(run_news())
-        elif mode == "all":
-            asyncio.run(run_all())
         else:
             log.error(f"❌ حالت نامعتبر: {mode}")
-            log.info("استفاده: python main.py [signals|news|all]")
+            log.info("استفاده: python main.py signals")
             sys.exit(1)
 
         log.info("🎉 اجرا با موفقیت تمام شد")
