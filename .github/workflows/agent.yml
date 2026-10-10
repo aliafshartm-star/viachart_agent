@@ -1,0 +1,51 @@
+name: ViaChart Auto Agent
+
+on:
+  # اجرای خودکار هر ۶ ساعت
+  schedule:
+    - cron: '0 */6 * * *'   # ساعت 00:00، 06:00، 12:00، 18:00 UTC
+
+  # اجرای دستی برای تست
+  workflow_dispatch:
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ViaChart Agent
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python main.py signals
+
+      - name: Upload charts (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: charts-${{ github.run_number }}
+          path: charts/*.png
+          retention-days: 3
+          if-no-files-found: ignore
