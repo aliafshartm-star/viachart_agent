@@ -3,7 +3,6 @@
 """
 import requests
 import logging
-from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -20,20 +19,16 @@ def get_top_symbols(limit=100):
         response.raise_for_status()
         data = response.json()
 
-        # فقط جفت‌های USDT
         usdt_pairs = [
             item for item in data
             if item["symbol"].endswith("USDT")
             and float(item["quoteVolume"]) > 0
         ]
-
-        # مرتب‌سازی بر اساس حجم
         usdt_pairs.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
 
         symbols = []
         for item in usdt_pairs[:limit]:
             symbol = item["symbol"]
-            # فیلتر کردن توکن‌های اهرمی و عجیب
             if any(x in symbol for x in ["UP", "DOWN", "BULL", "BEAR"]):
                 continue
             symbols.append({
@@ -91,7 +86,6 @@ def get_fear_greed_index():
 
 
 if __name__ == "__main__":
-    # تست سریع
     print("\n🧪 تست data_fetcher...\n")
 
     symbols = get_top_symbols(limit=10)
