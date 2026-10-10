@@ -1,5 +1,7 @@
 """
-مسیریاب هوشمند بین Groq و Gemini با fallback خودکار
+مسیریاب هوشمند بین Groq و Gemini
+- مدل‌ها به صورت خودکار کشف میشن
+- اگه یکی خطا داد، خودکار میره بعدی
 """
 import os
 import logging
@@ -9,37 +11,45 @@ import google.generativeai as genai
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
-# مدل‌های Groq به ترتیب اولویت
-GROQ_MODELS = [
-    "llama-3.1-8b-instant",
-    "llama-3.1-70b-versatile",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it",
-]
-
-# مدل‌های Gemini به ترتیب اولویت
-GEMINI_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-exp",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro",
-    "gemini-pro",
-]
-
 
 class LLMRouter:
-    """مسیریاب بین Groq و Gemini"""
-
     def __init__(self):
         self.groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-    def _try_groq(self, prompt: str, system: str, max_tokens: int) -> str:
-        """تلاش با مدل‌های مختلف Groq"""
-        for model in GROQ_MODELS:
+    def list_groq_models(self):
+        """لیست مدل‌های در دسترس Groq"""
+        try:
+            models = self.groq_client.models.list()
+            return [m.id for m in models.data]
+        except Exception as e:
+            log.error(f"خطا در لیست مدل‌های Groq: {e}")
+            return []
+
+    def list_gemini_models(self):
+        """لیست مدل‌های Gemini که از generateContent پشتیبانی می‌کنن"""
+        models = []
+        try:
+            for m in genai.list_models():
+                if "generateContent" in m.supported_generation_methods:
+                    # نام کامل مثل models/gemini-xxx رو کوتاه می‌کنیم
+                    name = m.name.replace("models/", "")
+                    models.append(name)
+        except Exception as e:
+            log.error(f"خطا در لیست مدل‌های Gemini: {e}")
+        return models
+
+    def _try_groq(self, prompt, system, max_tokens):
+        models = self.list_groq_models()
+        if not models:
+            log.warning("⚠️ هیچ مدل Groq ای پیدا نشد")
+            return None
+        log.info(f"مدل‌های Groq موجود: {models[:5]}")
+
+        for model in models:
+            # از مدل‌های خاص صرف‌نظر کن (مثل whisper, tts)
+            if any(x in model.lower() for x in ["whisper", "tts", "guard"]):
+                continue
             try:
                 log.info(f"→ تلاش با Groq ({model})...")
                 response = self.groq_client.chat.completions.create(
@@ -51,17 +61,21 @@ class LLMRouter:
                     max_tokens=max_tokens,
                     temperature=0.7,
                 )
-                result = response.choices[0].message.content
                 log.info(f"✅ Groq ({model}) پاسخ داد")
-                return result
+                return response.choices[0].message.content
             except Exception as e:
-                log.warning(f"⚠️ Groq ({model}) خطا داد: {str(e)[:120]}")
+                log.warning(f"⚠️ {model} خطا داد: {str(e)[:100]}")
         return None
 
-    def _try_gemini(self, prompt: str, system: str) -> str:
-        """تلاش با مدل‌های مختلف Gemini"""
+    def _try_gemini(self, prompt, system):
+        models = self.list_gemini_models()
+        if not models:
+            log.warning("⚠️ هیچ مدل Gemini ای پیدا نشد")
+            return None
+        log.info(f"مدل‌های Gemini موجود: {models[:5]}")
+
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
-        for model_name in GEMINI_MODELS:
+        for model_name in models:
             try:
                 log.info(f"→ تلاش با Gemini ({model_name})...")
                 model = genai.GenerativeModel(model_name)
@@ -69,17 +83,16 @@ class LLMRouter:
                 log.info(f"✅ Gemini ({model_name}) پاسخ داد")
                 return response.text
             except Exception as e:
-                log.warning(f"⚠️ Gemini ({model_name}) خطا داد: {str(e)[:120]}")
+                log.warning(f"⚠️ {model_name} خطا داد: {str(e)[:100]}")
         return None
 
-    def generate(self, prompt: str, system: str = "", max_tokens: int = 2000) -> str:
-        """تولید متن با Groq (اول) و Gemini (پشتیبان)"""
-        # ۱. تلاش با Groq
+    def generate(self, prompt, system="", max_tokens=2000):
+        # ۱. Groq
         result = self._try_groq(prompt, system, max_tokens)
         if result:
             return result
 
-        # ۲. تلاش با Gemini
+        # ۲. Gemini
         result = self._try_gemini(prompt, system)
         if result:
             return result
@@ -91,8 +104,19 @@ if __name__ == "__main__":
     print("\n🧪 تست LLM Router...\n")
     router = LLMRouter()
 
+    # نمایش مدل‌های در دسترس
+    print("=" * 50)
+    print("📋 مدل‌های Groq در دسترس:")
+    for m in router.list_groq_models():
+        print(f"   - {m}")
+
+    print("\n📋 مدل‌های Gemini در دسترس:")
+    for m in router.list_gemini_models():
+        print(f"   - {m}")
+    print("=" * 50)
+
     prompt = "در یک جمله کوتاه بگو بیت‌کوین چیه."
-    print(f"📝 سوال: {prompt}\n")
+    print(f"\n📝 سوال: {prompt}\n")
     print("🤖 پاسخ:")
     print(router.generate(prompt))
     print()
