@@ -1,16 +1,13 @@
 """
 ViaChart Agent - مغز اصلی
-- هر ارزی که امتیاز ≥ 50 بگیره → سیگنال
-- Cooldown 24h (هر ارز یک بار در روز)
-- بدون سقف روزانه
+- تحلیل ۱۰۰ ارز
+- AI Judge تصمیم می‌گیره هر سیگنال بفرسته یا نه
 """
 import os
 import sys
-import json
 import time
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
 
 from data_fetcher import get_top_symbols, get_klines
 from pump_detector import (
@@ -18,66 +15,22 @@ from pump_detector import (
 )
 from chart_generator import generate_chart
 from telegram_poster import post_signal
+from signal_history import add_signal, build_context_for_ai
+from ai_judge import ask_ai_judge
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
-STATE_FILE = "state/last_sent.json"
-os.makedirs("state", exist_ok=True)
-
-# تنظیمات
-MIN_SCORE = 50           # آستانه سیگنال
-COOLDOWN_HOURS = 24      # هر ارز ۲۴ ساعت یک بار
-TOP_SCAN = 100           # ۱۰۰ ارز برتر
+MIN_SCORE = 50
+TOP_SCAN = 100
 INTERVAL = "4h"
 KLINE_LIMIT = 200
-SEND_DELAY = 20          # تاخیر بین ارسال‌ها
+SEND_DELAY = 20
 
-
-# ============================================================
-# State Management
-# ============================================================
-
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"last_sent": {}}
-
-
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
-
-
-def is_on_cooldown(state, symbol):
-    last_time = state["last_sent"].get(symbol)
-    if not last_time:
-        return False
-    try:
-        last_dt = datetime.fromisoformat(last_time)
-        if datetime.now(timezone.utc) - last_dt < timedelta(hours=COOLDOWN_HOURS):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def mark_sent(state, symbol):
-    state["last_sent"][symbol] = datetime.now(timezone.utc).isoformat()
-
-
-# ============================================================
-# تحلیل
-# ============================================================
 
 def analyze_all(limit=TOP_SCAN):
     log.info(f"📊 تحلیل {limit} ارز...")
 
-    # BTC برای RS
     btc_candles = get_klines("BTCUSDT", INTERVAL, KLINE_LIMIT)
     btc_df = candles_to_df(btc_candles) if btc_candles else None
 
@@ -93,18 +46,13 @@ def analyze_all(limit=TOP_SCAN):
             candles = get_klines(symbol, INTERVAL, KLINE_LIMIT)
             if not candles or len(candles) < 60:
                 continue
-
             df = candles_to_df(candles)
             cg_id = symbol.replace("USDT", "").lower()
-
             analysis = analyze_coin(symbol, cg_id, df, coin, btc_df=btc_df)
             results.append(analysis)
-
             if i % 20 == 0:
                 log.info(f"   ... {i}/{len(symbols)}")
-
             time.sleep(0.08)
-
         except Exception as e:
             log.warning(f"   ⚠️ {symbol}: {str(e)[:60]}")
             continue
@@ -112,65 +60,57 @@ def analyze_all(limit=TOP_SCAN):
     return results
 
 
-# ============================================================
-# اجرا
-# ============================================================
-
 async def run():
     log.info("=" * 50)
     log.info("🚀 ViaChart Agent")
     log.info("=" * 50)
 
-    state = load_state()
-
-    # تحلیل همه ارزها
     all_results = analyze_all()
     if not all_results:
         log.warning("⚠️ هیچ ارزی تحلیل نشد")
         return
 
-    # فیلترها
     passed = [r for r in all_results if passes_filters(r)]
     log.info(f"✅ {len(passed)} ارز از فیلترها گذشت")
 
-    # امتیاز ≥ MIN_SCORE
     candidates = [r for r in passed if r["score"] >= MIN_SCORE]
     candidates.sort(key=lambda x: x["score"], reverse=True)
 
     log.info(f"🎯 {len(candidates)} ارز امتیاز ≥ {MIN_SCORE}")
 
     if not candidates:
-        log.info(f"😐 هیچ سیگنالی نبود")
+        log.info("😐 هیچ سیگنالی نبود")
         return
 
-    # نمایش ۱۰ تای برتر
-    log.info(f"\n🏆 بهترین‌ها:")
+    log.info(f"\n🏆 کاندیداها:")
     for r in candidates[:10]:
         log.info(f"   • {r['symbol']:12s} — {r['score']:3d}/100")
 
-    # ========= ارسال =========
     sent = 0
     for pick in candidates:
-        # چک cooldown
-        if is_on_cooldown(state, pick["symbol"]):
-            log.info(f"   ⏳ {pick['symbol']} در cooldown")
+        symbol = pick["symbol"]
+        log.info(f"\n🤖 بررسی {symbol} با AI Judge...")
+
+        context = build_context_for_ai(symbol, pick)
+        if context["has_history"]:
+            log.info(f"   📚 تاریخچه: {len(context['past_signals'])} سیگنال قبلی")
+
+        decision = ask_ai_judge(symbol, context)
+        log.info(f"   🎯 AI: {decision['decision']} — {decision['reason']}")
+
+        if decision["decision"] != "SEND":
+            log.info(f"   ⏭️ رد شد توسط AI")
             continue
 
-        symbol = pick["symbol"]
-        score = pick["score"]
-        log.info(f"\n📤 ارسال {symbol} ({score}/100)...")
-
+        log.info(f"   📤 ارسال...")
         try:
             chart = generate_chart(symbol, INTERVAL, 150, score_data=pick)
             ok = await post_signal(pick, chart)
 
             if ok:
-                mark_sent(state, symbol)
-                save_state(state)
+                add_signal(symbol, pick)
                 sent += 1
                 log.info(f"   ✅ ارسال موفق")
-
-                # تاخیر بین ارسال‌ها
                 await asyncio.sleep(SEND_DELAY)
         except Exception as e:
             log.error(f"   ❌ {symbol}: {e}")
@@ -180,7 +120,6 @@ async def run():
 
 def main():
     log.info("🎬 ViaChart Agent")
-
     try:
         asyncio.run(run())
         log.info("🎉 اجرا تمام شد")
