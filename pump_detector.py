@@ -1,11 +1,7 @@
 """
-Pump Detector v2 — تشخیص ارزهای آماده رشد
-۵ نیروی بازسازی‌شده:
-  ۱. Volume Accumulation (0-20)
-  ۲. Trend Strength / RS vs BTC (0-20)
-  ۳. News + Trending (0-20)
-  ۴. Momentum & Squeeze (0-20)
-  ۵. Market Regime (0-20)
+Pump Detector v3 — تشخیص ارزهای آماده رشد
+۵ نیرو: Volume, Trend, News, Momentum, Regime
+تارگت‌های پویا: BTC/ETH کوچیک‌تر، آلت‌کوین‌ها بزرگ‌تر
 """
 import os
 import logging
@@ -63,9 +59,8 @@ def find_swing_lows(df, lookback=5):
 # ============================================================
 
 _cache = {
-    "sectors": {"data": None, "time": 0},
-    "news": {"data": None, "time": 0},
     "trending": {"data": None, "time": 0},
+    "news": {"data": None, "time": 0},
     "btc": {"data": None, "time": 0},
     "fng": {"data": None, "time": 0},
 }
@@ -119,9 +114,6 @@ def detect_volume_accumulation(df):
 # ============================================================
 
 def detect_trend_strength(df, symbol, btc_df=None):
-    """
-    روند صعودی + قوی‌تر از BTC
-    """
     score = 0
     reasons = []
 
@@ -152,7 +144,7 @@ def detect_trend_strength(df, symbol, btc_df=None):
         elif change_7d > 0:
             score += 2
 
-    # RS vs BTC (اگه BTC دیتا موجوده)
+    # RS vs BTC
     if btc_df is not None and len(btc_df) >= 42:
         try:
             btc_change = (btc_df["close"].iloc[-1] / btc_df["close"].iloc[-42]) - 1
@@ -174,7 +166,6 @@ def detect_trend_strength(df, symbol, btc_df=None):
 # ============================================================
 
 def get_trending_coins():
-    """کوین‌های ترند CoinGecko"""
     now = time.time()
     if _cache["trending"]["data"] and (now - _cache["trending"]["time"]) < 1800:
         return _cache["trending"]["data"]
@@ -213,7 +204,6 @@ def get_news():
 
 
 def detect_news_sentiment(symbol):
-    """ترند + خبر"""
     score = 0
     reasons = []
 
@@ -269,11 +259,10 @@ def get_funding_rate(symbol):
 
 
 def detect_momentum_squeeze(df, symbol):
-    """Funding + RSI + نزدیکی به مقاومت"""
     score = 0
     reasons = []
 
-    # Funding Rate (5 امتیاز پایه)
+    # Funding Rate
     fr = get_funding_rate(symbol)
     if fr is not None:
         fr_pct = fr * 100
@@ -288,7 +277,7 @@ def detect_momentum_squeeze(df, symbol):
     else:
         score += 3
 
-    # RSI (5 امتیاز)
+    # RSI
     if len(df) >= 15:
         delta = df["close"].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
@@ -304,7 +293,7 @@ def detect_momentum_squeeze(df, symbol):
             score += 7
             reasons.append(f"RSI پایین — فرصت ({rsi_val:.0f})")
 
-    # نزدیکی به مقاومت (5 امتیاز)
+    # نزدیکی به مقاومت
     if len(df) >= 20:
         recent_high = df["high"].tail(20).max()
         price = df["close"].iloc[-1]
@@ -426,28 +415,46 @@ def analyze_coin(symbol, cg_id, df, ticker_info, btc_df=None):
     price = df["close"].iloc[-1]
     atr_val = atr(df).iloc[-1]
 
+    # تارگت‌های پویا
+    if symbol in ["BTCUSDT", "ETHUSDT"]:
+        stop_pct = 0.03
+        tp1_pct = 0.03
+        tp2_pct = 0.06
+        tp3_pct = 0.10
+    else:
+        stop_pct = 0.05
+        tp1_pct = 0.075
+        tp2_pct = 0.15
+        tp3_pct = 0.30
+
     entry_low = price * 0.995
     entry_high = price * 1.005
-    stop = price * 0.95
-    tp1 = price * 1.075
-    tp2 = price * 1.15
-    tp3 = price * 1.30
+    stop = price * (1 - stop_pct)
+    tp1 = price * (1 + tp1_pct)
+    tp2 = price * (1 + tp2_pct)
+    tp3 = price * (1 + tp3_pct)
+
+    # تغییر ۷ روزه
+    change_7d = 0
+    if len(df) >= 42:
+        change_7d = ((df["close"].iloc[-1] / df["close"].iloc[-42]) - 1) * 100
 
     return {
         "symbol": symbol,
         "cg_id": cg_id,
         "price": float(price),
         "change_24h": ticker_info.get("change_24h", 0),
+        "change_7d": float(change_7d),
         "volume_24h": ticker_info.get("volume_24h", 0),
         "score": total,
         "forces": forces,
         "reasons": all_reasons,
-        "entry_low": round(entry_low, 6),
-        "entry_high": round(entry_high, 6),
-        "stop": round(stop, 6),
-        "tp1": round(tp1, 6),
-        "tp2": round(tp2, 6),
-        "tp3": round(tp3, 6),
+        "entry_low": round(entry_low, 8),
+        "entry_high": round(entry_high, 8),
+        "stop": round(stop, 8),
+        "tp1": round(tp1, 8),
+        "tp2": round(tp2, 8),
+        "tp3": round(tp3, 8),
         "atr": float(atr_val),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -460,11 +467,18 @@ def analyze_coin(symbol, cg_id, df, ticker_info, btc_df=None):
 def passes_filters(coin):
     if coin["volume_24h"] < 15_000_000:
         return False
-    if coin["change_24h"] > 10:
+
+    if coin["change_24h"] > 5:
         return False
     if coin["change_24h"] < -15:
         return False
 
+    # فیلتر پامپ ۷ روزه
+    change_7d = coin.get("change_7d", 0)
+    if change_7d > 30:
+        return False
+
+    # R:R
     entry_mid = (coin["entry_low"] + coin["entry_high"]) / 2
     risk = (entry_mid - coin["stop"]) / entry_mid
     reward = (coin["tp1"] - entry_mid) / entry_mid
@@ -475,11 +489,11 @@ def passes_filters(coin):
 
 
 def get_signal_tier(score):
-    if score >= 65:
+    if score >= 70:
         return "TIER 1"
-    elif score >= 50:
+    elif score >= 60:
         return "TIER 2"
-    elif score >= 40:
+    elif score >= 50:
         return "TIER 3"
     return "NO SIGNAL"
 
@@ -491,7 +505,7 @@ def get_signal_tier(score):
 if __name__ == "__main__":
     from data_fetcher import get_top_symbols, get_klines
 
-    print("\n🧪 تست pump_detector v2...\n")
+    print("\n🧪 تست pump_detector v3...\n")
 
     symbols = get_top_symbols(limit=10)
     print(f"دریافت {len(symbols)} ارز\n")
@@ -513,8 +527,9 @@ if __name__ == "__main__":
             results.append(analysis)
             print(f"   ✅ امتیاز: {analysis['score']}/100 — {get_signal_tier(analysis['score'])}")
             print(f"      Forces: {analysis['forces']}")
+            print(f"      Change 7d: {analysis['change_7d']:.1f}%")
         else:
-            print(f"   ❌ رد شد (امتیاز: {analysis['score']})")
+            print(f"   ❌ رد شد (امتیاز: {analysis['score']}, 7d: {analysis.get('change_7d',0):.1f}%)")
 
         time.sleep(0.5)
 
