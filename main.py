@@ -23,7 +23,7 @@ STATE_FILE = "state/last_sent.json"
 DAILY_FILE = "state/daily_count.json"
 os.makedirs("state", exist_ok=True)
 
-# تنظیمات - قابل تغییر
+# تنظیمات
 MIN_SCORE = 45
 MAX_DAILY_SIGNALS = 3
 COOLDOWN_HOURS = 24
@@ -88,6 +88,10 @@ def mark_sent(state, symbol):
 def analyze_all(limit=TOP_SCAN):
     log.info(f"📊 تحلیل {limit} ارز برتر...")
 
+    # BTC رو یه بار بگیر برای RS
+    btc_candles = get_klines("BTCUSDT", INTERVAL, KLINE_LIMIT)
+    btc_df = candles_to_df(btc_candles) if btc_candles else None
+
     symbols = get_top_symbols(limit=limit)
     if not symbols:
         log.error("❌ هیچ ارزی دریافت نشد")
@@ -104,9 +108,7 @@ def analyze_all(limit=TOP_SCAN):
             df = candles_to_df(candles)
             cg_id = symbol.replace("USDT", "").lower()
 
-            analysis = analyze_coin(symbol, cg_id, df, coin)
-
-            # ثبت همه ارزها با امتیازشون (حتی اگه فیلتر رو نگذرن)
+            analysis = analyze_coin(symbol, cg_id, df, coin, btc_df=btc_df)
             results.append(analysis)
 
             if i % 10 == 0:
@@ -140,25 +142,30 @@ async def run():
         log.warning("⚠️ هیچ ارزی تحلیل نشد")
         return
 
-    # ==== گزارش همه امتیازها ====
+    # گزارش ۱۵ ارز برتر
     log.info("")
-    log.info("📊 امتیاز همه ارزها (مرتب‌شده):")
+    log.info("📊 امتیاز ارزها (مرتب‌شده):")
     sorted_all = sorted(all_results, key=lambda x: x["score"], reverse=True)
     for r in sorted_all[:15]:
         tier = get_signal_tier(r["score"])
-        log.info(f"   • {r['symbol']:12s} — {r['score']:3d}/100  [{tier}]")
+        f = r.get("forces", {})
+        log.info(
+            f"   • {r['symbol']:12s} — {r['score']:3d}/100 [{tier:11s}] "
+            f"V:{f.get('volume',0):2d} T:{f.get('trend',0):2d} "
+            f"N:{f.get('news',0):2d} M:{f.get('momentum',0):2d} R:{f.get('regime',0):2d}"
+        )
 
-    # ==== فیلترها ====
+    # فیلترها
     passed = [r for r in all_results if passes_filters(r)]
     log.info("")
     log.info(f"✅ {len(passed)} ارز از فیلترها گذشت")
 
-    # ==== امتیازهای قابل قبول ====
+    # آستانه
     tier1 = [r for r in passed if r["score"] >= MIN_SCORE]
     log.info(f"🎯 {len(tier1)} ارز امتیاز ≥ {MIN_SCORE} دارن")
 
     if not tier1:
-        log.info(f"😐 هیچ سیگنال قوی‌ای (امتیاز ≥ {MIN_SCORE}) پیدا نشد")
+        log.info(f"😐 هیچ سیگنال قوی‌ای پیدا نشد")
         return
 
     tier1.sort(key=lambda x: x["score"], reverse=True)
@@ -167,7 +174,6 @@ async def run():
     for r in tier1[:5]:
         log.info(f"   • {r['symbol']} — {r['score']}/100")
 
-    # ==== ارسال ====
     sent = 0
     for pick in tier1:
         if daily["count"] + sent >= MAX_DAILY_SIGNALS:
