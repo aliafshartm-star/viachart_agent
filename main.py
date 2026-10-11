@@ -1,8 +1,9 @@
 """
 ViaChart Agent - مغز اصلی
-- تحلیل ۱۰۰ ارز با ۵ نیرو
-- انتخاب بهترین ارز
-- ارسال سیگنال به کانال
+- تحلیل ۳۰ ارز برتر
+- فقط سیگنال‌های قوی (TIER 1)
+- حداکثر ۳ سیگنال در روز
+- Cooldown 24 ساعته
 """
 import os
 import sys
@@ -23,18 +24,20 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
 STATE_FILE = "state/last_sent.json"
+DAILY_FILE = "state/daily_count.json"
 os.makedirs("state", exist_ok=True)
 
 # تنظیمات
-MIN_SCORE = 35              # حداقل امتیاز (کم شد)
-TOP_N = 1                   # تعداد سیگنال در هر اجرا
+MIN_SCORE = 65              # فقط سیگنال‌های قوی
+MAX=
+_DAILY_SIGNALS = 3       # حداکثر ۳ سیگنال در روز
+COOLDOWN_HOURS = 24         # هر ارز ۲۴ ساعت یک بار
+TOP_SCAN = 30               # ۳۰ ارز برتر
 INTERVAL = "4h"
 KLINE_LIMIT = 200
-COOLDOWN_HOURS = 12
 
 
-# ============================================================
-# مدیریت State
+# ===========================================================# مدیریت State
 # ============================================================
 
 def load_state():
@@ -50,6 +53,28 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
+
+
+def load_daily_count():
+    """چند سیگنال امروز فرستادیم"""
+    if os.path.exists(DAILY_FILE):
+        try:
+            with open(DAILY_FILE, "r") as f:
+                data = json.load(f)
+                # چک کن تاریخ همون امروزه
+                if data.get("date") == datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+                    return data
+        except Exception:
+            pass
+    return {
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "count": 0
+    }
+
+
+def save_daily_count(data):
+    with open(DAILY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 def is_on_cooldown(state, symbol):
@@ -70,12 +95,11 @@ def mark_sent(state, symbol):
 
 
 # ============================================================
-# تحلیل ۱۰۰ ارز
+# تحلیل
 # ============================================================
 
-def analyze_all(limit=100):
-    """تحلیل همه ارزها"""
-    log.info(f"📊 شروع تحلیل {limit} ارز...")
+def analyze_all(limit=TOP_SCAN):
+    log.info(f"📊 تحلیل {limit} ارز برتر...")
 
     symbols = get_top_symbols(limit=limit)
     if not symbols:
@@ -95,34 +119,20 @@ def analyze_all(limit=100):
 
             analysis = analyze_coin(symbol, cg_id, df, coin)
 
-            # فقط ارزهایی که فیلترها رو پاس کردن
             if passes_filters(analysis):
                 results.append(analysis)
 
-            if i % 20 == 0:
-                log.info(f"   ... {i}/{len(symbols)} تحلیل شد")
+            if i % 10 == 0:
+                log.info(f"   ... {i}/{len(symbols)}")
 
-            time.sleep(0.12)
+            time.sleep(0.1)
 
         except Exception as e:
-            log.warning(f"   ⚠️ خطا در {symbol}: {str(e)[:80]}")
+            log.warning(f"   ⚠️ {symbol}: {str(e)[:60]}")
             continue
 
     log.info(f"✅ {len(results)} ارز از فیلترها گذشت")
     return results
-
-
-def select_best(results, state):
-    """انتخاب بهترین ارز"""
-    candidates = [r for r in results if not is_on_cooldown(state, r["symbol"])]
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-
-    if not candidates:
-        return None
-
-    top = candidates[0]
-    log.info(f"🎯 ارز برتر: {top['symbol']} — امتیاز {top['score']}")
-    return top
 
 
 # ============================================================
@@ -131,28 +141,44 @@ def select_best(results, state):
 
 async def run():
     log.info("=" * 50)
-    log.info("🚀 شروع ViaChart Agent")
+    log.info("🚀 ViaChart Agent")
     log.info("=" * 50)
+
+    # چک روزانه
+    daily = load_daily_count()
+    log.info(f"📊 سیگنال‌های امروز: {daily['count']}/{MAX_DAILY_SIGNALS}")
+
+    if daily["count"] >= MAX_DAILY_SIGNALS:
+        log.info("✋ به سقف روزانه رسیدیم. سیگنال جدید ارسال نمیشه.")
+        return
 
     state = load_state()
 
     # تحلیل
-    results = analyze_all(limit=100)
+    results = analyze_all()
     if not results:
         log.warning("⚠️ هیچ ارزی شرایط نداشت")
         return
 
-    # انتخاب برترین‌ها (مرتب‌شده)
-    results.sort(key=lambda x: x["score"], reverse=True)
+    # فقط TIER 1
+    tier1 = [r for r in results if r["score"] >= MIN_SCORE]
 
-    log.info(f"\n🏆 ۵ ارز برتر:")
-    for r in results[:5]:
-        log.info(f"   • {r['symbol']} — {r['score']}/100 ({get_signal_tier(r['score'])})")
+    if not tier1:
+        log.info(f"😐 هیچ سیگنال قوی‌ای (امتیاز ≥ {MIN_SCORE}) پیدا نشد")
+        return
 
-    # ارسال سیگنال‌ها
+    # مرتب‌سازی
+    tier1.sort(key=lambda x: x["score"], reverse=True)
+
+    log.info(f"\n🏆 {len(tier1)} سیگنال TIER 1:")
+    for r in tier1[:5]:
+        log.info(f"   • {r['symbol']} — {r['score']}/100")
+
+    # ارسال (تا سقف روزانه)
     sent = 0
-    for pick in results:
-        if sent >= TOP_N:
+    for pick in tier1:
+        if daily["count"] + sent >= MAX_DAILY_SIGNALS:
+            log.info("✋ سقف روزانه پر شد")
             break
 
         if is_on_cooldown(state, pick["symbol"]):
@@ -160,7 +186,7 @@ async def run():
             continue
 
         symbol = pick["symbol"]
-        log.info(f"\n📤 ارسال سیگنال {symbol} (امتیاز {pick['score']})...")
+        log.info(f"\n📤 ارسال {symbol} (امتیاز {pick['score']})...")
 
         try:
             chart = generate_chart(symbol, INTERVAL, 150, score_data=pick)
@@ -171,8 +197,18 @@ async def run():
                 save_state(state)
                 sent += 1
                 log.info(f"   ✅ ارسال موفق")
+
+                # تاخیر بین سیگنال‌ها
+                if sent < MAX_DAILY_SIGNALS:
+                    await asyncio.sleep(30)
         except Exception as e:
-            log.error(f"   ❌ خطا در {symbol}: {e}")
+            log.error(f"   ❌ {symbol}: {e}")
+
+    # آپدیت شمارنده
+    if sent > 0:
+        daily["count"] += sent
+        save_daily_count(daily)
+        log.info(f"\n📊 سیگنال‌های امروز: {daily['count']}/{MAX_DAILY_SIGNALS}")
 
     log.info(f"\n✅ {sent} سیگنال ارسال شد")
 
@@ -182,7 +218,7 @@ def main():
 
     try:
         asyncio.run(run())
-        log.info("🎉 اجرا با موفقیت تمام شد")
+        log.info("🎉 اجرا تمام شد")
     except Exception as e:
         log.error(f"❌ خطای کلی: {e}", exc_info=True)
         sys.exit(1)
