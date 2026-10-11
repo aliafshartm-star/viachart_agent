@@ -1,14 +1,14 @@
 name: ViaChart Auto Agent
 
 on:
-  # ۴ بار در روز — ساعت ۹ صبح، ۱ بعدازظهر، ۵ عصر، ۹ شب (به وقت ایران)
+  # اجرای خودکار ۴ بار در روز (به وقت ایران)
   schedule:
     - cron: '30 5 * * *'    # 09:00 ایران
     - cron: '30 9 * * *'    # 13:00 ایران
     - cron: '30 13 * * *'   # 17:00 ایران
     - cron: '30 17 * * *'   # 21:00 ایران
 
-  # اجرای دستی برای تست
+  # اجرای دستی
   workflow_dispatch:
 
 jobs:
@@ -42,7 +42,7 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python main.py signals
+        run: python main.py
 
       - name: Upload charts (artifact)
         if: always()
