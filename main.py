@@ -1,7 +1,7 @@
 """
 ViaChart Agent - مغز اصلی
 - تحلیل ۱۰۰ ارز
-- Signal Brain تصمیم می‌گیره (بدون AI)
+- Signal Brain تصمیم می‌گیره (TP/Stop رو چک می‌کنه)
 """
 import os
 import sys
@@ -97,7 +97,7 @@ async def run():
         # دریافت تاریخچه
         history = get_all_signals(symbol)
 
-        # آپدیت نتیجه آخرین سیگنال (اگه هست)
+        # آپدیت وضعیت آخرین سیگنال (TP خورد؟ Stop خورد؟)
         if history:
             update_result(symbol, pick["price"])
             history = get_all_signals(symbol)
