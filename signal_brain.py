@@ -1,6 +1,8 @@
 """
-Signal Brain — مغز تصمیم‌گیرنده ساده
-بدون AI، فقط منطق تمیز
+Signal Brain — مغز تصمیم‌گیرنده
+- چک می‌کنه وضعیت آخرین سیگنال چیه
+- اگه TP نخورده → دوباره نده
+- اگه TP خورد یا Stop خورد → بررسی کن
 """
 import logging
 from datetime import datetime, timezone
@@ -10,151 +12,87 @@ log = logging.getLogger(__name__)
 
 def should_send(symbol, current_analysis, history):
     """
-    تصمیم می‌گیره سیگنال بفرسته یا نه
-    
-    Args:
-        symbol: مثل "NEARUSDT"
-        current_analysis: داده فعلی (price, score, forces, ...)
-        history: لیست سیگنال‌های قبلی این ارز
-    
-    Returns:
-        dict: {"decision": "SEND"|"SKIP", "reason": "..."}
+    تصمیم می‌گیره دوباره سیگنال بده یا نه
     """
-    current_price = current_analysis["price"]
-    current_score = current_analysis["score"]
 
-    # ═══════════════════════════════════════
-    # حالت ۱: هیچ سیگنال قبلی نیست
-    # ═══════════════════════════════════════
-    if not history:
+    # اگه هیچ سیگنال قبلی نیست → بده
+    if not history or len(history) == 0:
         return {
             "decision": "SEND",
-            "reason": f"اولین سیگنال (امتیاز {current_score})"
+            "reason": f"اولین سیگنال {symbol} (امتیاز {current_analysis['score']})"
         }
 
     # آخرین سیگنال
     last = history[-1]
-    last_time_str = last.get("date")
     last_price = last.get("price_at_signal", 0)
     last_score = last.get("score", 0)
+    tp1 = last.get("tp1", 0)
+    stop = last.get("stop", 0)
     last_result = last.get("result", "")
 
-    # محاسبه زمان سپری شده
-    hours_ago = 999
-    if last_time_str:
-        try:
-            last_dt = datetime.fromisoformat(last_time_str)
-            hours_ago = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
-        except Exception:
-            pass
+    current_price = current_analysis["price"]
 
-    # ═══════════════════════════════════════
-    # حالت ۲: سیگنال قبلی < 24h پیش
-    # ═══════════════════════════════════════
-    if hours_ago < 24:
-        return {
-            "decision": "SKIP",
-            "reason": f"سیگنال قبلی فقط {hours_ago:.0f} ساعت پیش بود"
-        }
-
-    # ═══════════════════════════════════════
-    # حالت ۳: سیگنال قبلی موفق بود (TP خورد)
-    # ═══════════════════════════════════════
-    if last_result and "TP" in last_result:
-        return {
-            "decision": "SKIP",
-            "reason": f"سیگنال قبلی موفق بود ({last_result})"
-        }
-
-    # ═══════════════════════════════════════
-    # حالت ۴: سیگنال قبلی استاپ خورد
-    # ═══════════════════════════════════════
-    if last_result == "STOPPED":
-        # اگه امتیاز قوی‌تر شده + 7+ روز گذشته
-        if hours_ago >= 168 and current_score >= 65:
-            return {
-                "decision": "SEND",
-                "reason": f"ستاپ جدید قوی ({current_score}) پس از {hours_ago/24:.0f} روز"
-            }
-        # اگه < 7 روز
-        return {
-            "decision": "SKIP",
-            "reason": "سیگنال قبلی ناموفق بود، صبر بیشتر"
-        }
-
-    # ═══════════════════════════════════════
-    # حالت ۵: سیگنال قبلی OPEN (باز) است
-    # ═══════════════════════════════════════
-    if last_result and "OPEN" in last_result:
-        # تغییر قیمت از زمان سیگنال
+    # ─────────────────────────────────
+    # حالت ۱: آخرین سیگنال هنوز TP نخورده (OPEN)
+    # → دوباره نده!
+    # ─────────────────────────────────
+    if not last_result or "OPEN" in last_result:
+        # محاسبه سود فعلی
         if last_price > 0:
-            price_change = ((current_price - last_price) / last_price) * 100
+            change = ((current_price - last_price) / last_price) * 100
         else:
-            price_change = 0
+            change = 0
 
-        # اگه تو سود قابل توجهه → بذار ادامه بده
-        if price_change > 3:
-            return {
-                "decision": "SKIP",
-                "reason": f"سیگنال قبلی تو سود ({price_change:+.1f}%)، بذار ادامه بده"
-            }
+        return {
+            "decision": "SKIP",
+            "reason": f"{symbol} قبلاً سیگنال شده، هنوز TP نخورده (سود فعلی {change:+.1f}%)"
+        }
 
-        # اگه 48h گذشته و هنوز در حرکته
-        if hours_ago < 48:
-            return {
-                "decision": "SKIP",
-                "reason": "سیگنال قبلی هنوز بازه"
-            }
-
-        # بعد از 48h، اگه امتیاز قوی‌تره + قیمت نزدیک قبلی
-        if current_score >= last_score + 5 and abs(price_change) < 5:
+    # ─────────────────────────────────
+    # حالت ۲: TP خورد → بعد از مدتی دوباره می‌تونه
+    # ─────────────────────────────────
+    if "TP" in last_result:
+        hours_ago = _hours_since(last.get("date"))
+        if hours_ago >= 168:  # ۷ روز
             return {
                 "decision": "SEND",
-                "reason": f"امتیاز بهتر شد ({last_score}→{current_score})"
+                "reason": f"سیگنال قبلی موفق بود، {hours_ago/24:.0f} روز گذشته"
             }
-
         return {
             "decision": "SKIP",
-            "reason": "سیگنال قبلی هنوز بازه"
+            "reason": f"سیگنال قبلی موفق بود ({last_result})، صبر تا ستاپ جدید"
         }
 
-    # ═══════════════════════════════════════
-    # حالت ۶: هیچ نتیجه‌ای ثبت نشده (خام)
-    # ═══════════════════════════════════════
-    if last_price > 0:
-        price_change = ((current_price - last_price) / last_price) * 100
-    else:
-        price_change = 0
-
-    # اگه قیمت خیلی رفته بالا → دیره
-    if price_change > 10:
+    # ─────────────────────────────────
+    # حالت ۳: Stop خورد → بعد از مدتی
+    # ─────────────────────────────────
+    if "STOP" in last_result:
+        hours_ago = _hours_since(last.get("date"))
+        if hours_ago >= 168 and current_analysis["score"] >= 65:
+            return {
+                "decision": "SEND",
+                "reason": f"سیگنال قبلی Stop خورد، {hours_ago/24:.0f} روز گذشته + امتیاز قوی"
+            }
         return {
             "decision": "SKIP",
-            "reason": f"قیمت {price_change:+.0f}% رفته، دیره"
+            "reason": "سیگنال قبلی ناموفق بود، صبر"
         }
 
-    # اگه قیمت ریخته و داره برمی‌گرده + امتیاز قوی
-    if price_change < -5 and current_score >= 60:
-        return {
-            "decision": "SEND",
-            "reason": f"ریزش {price_change:.0f}% + امتیاز قوی"
-        }
-
-    # اگه < 48h → صبر
-    if hours_ago < 48:
-        return {
-            "decision": "SKIP",
-            "reason": f"سیگنال قبلی {hours_ago:.0f} ساعت پیش بود"
-        }
-
-    # اگه 7+ روز گذشته → اجازه بده
-    if hours_ago >= 168:
-        return {
-            "decision": "SEND",
-            "reason": f"ستاپ جدید پس از {hours_ago/24:.0f} روز"
-        }
-
+    # ─────────────────────────────────
+    # حالت ۴: نامشخص → محافظه‌کار
+    # ─────────────────────────────────
     return {
         "decision": "SKIP",
-        "reason": "صبر تا شرایط بهتر"
+        "reason": f"{symbol} قبلاً سیگنال شده"
     }
+
+
+def _hours_since(date_str):
+    """چند ساعت از این تاریخ گذشته"""
+    if not date_str:
+        return 999
+    try:
+        dt = datetime.fromisoformat(date_str)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    except Exception:
+        return 999
