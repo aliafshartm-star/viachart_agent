@@ -1,15 +1,97 @@
 """
 AI Judge — با Gemini تصمیم می‌گیره سیگنال بفرسته یا نه
+- خودکار مدل‌های در دسترس رو پیدا می‌کنه
+- fallback امنیتی: اگه AI خطا داد، cooldown ساده اجرا میشه
 """
 import os
 import json
 import logging
+from datetime import datetime, timezone
 
 import google.generativeai as genai
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
+
+# ============================================================
+# پیدا کردن مدل‌های در دسترس Gemini
+# ============================================================
+
+def get_available_gemini_models():
+    """لیست مدل‌های Gemini که از generateContent پشتیبانی می‌کنن"""
+    try:
+        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+        models = []
+        for m in genai.list_models():
+            if "generateContent" in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                # فیلتر کردن مدل‌های مناسب
+                if any(x in name.lower() for x in ["gemini", "flash", "pro"]):
+                    models.append(name)
+        log.info(f"📋 Gemini models: {models[:5]}")
+        return models
+    except Exception as e:
+        log.error(f"خطا در دریافت مدل‌ها: {e}")
+        return []
+
+
+# ============================================================
+# fallback ساده (اگه AI کار نکرد)
+# ============================================================
+
+def simple_cooldown_check(context):
+    """
+    اگه AI کار نکرد، این چک ساده اجرا میشه:
+    - اگه سیگنال قبلی < 48h پیش → SKIP
+    - اگه سیگنال قبلی OPEN بود → SKIP
+    - اگه 7+ روز گذشته → SEND
+    """
+    if not context["has_history"]:
+        return {"decision": "SEND", "reason": "اولین سیگنال (fallback)"}
+
+    past = context["past_signals"]
+    if not past:
+        return {"decision": "SEND", "reason": "بدون تاریخچه"}
+
+    last = past[-1]
+    hours_ago = last.get("hours_ago") or 999
+
+    # اگه < 48h → SKIP
+    if hours_ago < 48:
+        return {
+            "decision": "SKIP",
+            "reason": f"سیگنال قبلی فقط {hours_ago:.0f} ساعت پیش بود"
+        }
+
+    # اگه نتیجه OPEN بود → SKIP
+    result = last.get("result", "")
+    if result and "OPEN" in result:
+        return {
+            "decision": "SKIP",
+            "reason": "سیگنال قبلی هنوز بازه"
+        }
+
+    # اگه TP خورده → SKIP
+    if result and "TP" in result:
+        return {
+            "decision": "SKIP",
+            "reason": "سیگنال قبلی موفق بود"
+        }
+
+    # اگه 7+ روز → SEND
+    if hours_ago >= 168:
+        return {
+            "decision": "SEND",
+            "reason": "ستاپ جدید پس از ۷ روز"
+        }
+
+    return {"decision": "SKIP", "reason": "صبر تا شرایط بهتر"}
+
+
+# ============================================================
+# AI Judge اصلی
+# ============================================================
 
 def ask_ai_judge(symbol, context):
     """
@@ -19,17 +101,16 @@ def ask_ai_judge(symbol, context):
     try:
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-        models_to_try = [
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-pro",
-        ]
+        available_models = get_available_gemini_models()
+
+        if not available_models:
+            log.warning("⚠️ هیچ مدل Gemini در دسترس نیست → fallback")
+            return simple_cooldown_check(context)
 
         prompt = _build_prompt(symbol, context)
 
         result_text = None
-        for model_name in models_to_try:
+        for model_name in available_models:
             try:
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(
@@ -41,13 +122,15 @@ def ask_ai_judge(symbol, context):
                 )
                 result_text = response.text.strip()
                 if result_text:
+                    log.info(f"   ✅ Gemini ({model_name}) پاسخ داد")
                     break
             except Exception as e:
-                log.warning(f"مدل {model_name} خطا: {str(e)[:80]}")
+                log.warning(f"   مدل {model_name} خطا: {str(e)[:80]}")
                 continue
 
         if not result_text:
-            return {"decision": "SEND", "reason": "AI unavailable — default send"}
+            log.warning("⚠️ Gemini پاسخ نداد → fallback")
+            return simple_cooldown_check(context)
 
         # پیدا کردن JSON
         json_start = result_text.find("{")
@@ -59,12 +142,12 @@ def ask_ai_judge(symbol, context):
                 decision = parsed.get("decision", "SEND").upper()
                 reason = parsed.get("reason", "")
                 if decision not in ["SEND", "SKIP"]:
-                    decision = "SEND"
+                    decision = "SKIP"
                 return {"decision": decision, "reason": reason}
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning(f"خطا در پارس JSON: {e}")
 
-        # Fallback
+        # fallback
         upper = result_text.upper()
         if "SKIP" in upper:
             return {"decision": "SKIP", "reason": result_text[:200]}
@@ -72,7 +155,7 @@ def ask_ai_judge(symbol, context):
 
     except Exception as e:
         log.error(f"AI Judge خطا: {e}")
-        return {"decision": "SEND", "reason": f"Error: {str(e)[:100]}"}
+        return simple_cooldown_check(context)
 
 
 def _build_prompt(symbol, ctx):
@@ -82,10 +165,10 @@ def _build_prompt(symbol, ctx):
     if not ctx["has_history"]:
         return f"""You are an AI trading assistant for a crypto Telegram channel.
 
-NEW signal candidate (first time ever):
+NEW signal candidate (first time):
 
-Symbol: {coin}/USDT (SPOT trading)
-Current Price: ${current['price']}
+Symbol: {coin}/USDT (SPOT)
+Price: ${current['price']}
 Score: {current['score']}/100
 Forces: {json.dumps(current['forces'], ensure_ascii=False)}
 Reasons: {json.dumps(current['reasons'], ensure_ascii=False)}
@@ -98,16 +181,16 @@ Respond ONLY with JSON:
     past = ctx["past_signals"]
     past_str = ""
     for p in past:
-        past_str += f"- {p['hours_ago']}h ago: ${p['price_then']} (score {p['score_then']}) → {p['result']}\n"
+        past_str += f"- {p.get('hours_ago', '?')}h ago: ${p['price_then']} (score {p['score_then']}) → {p.get('result', 'open')}\n"
 
     return f"""You are an AI trading assistant for a crypto Telegram channel.
 
-Decide: send a NEW signal for {coin}/USDT or SKIP?
+Decide: send NEW signal for {coin}/USDT or SKIP?
 
 === CURRENT ===
-Symbol: {coin}/USDT (SPOT)
-Current Price: ${current['price']}
-Current Score: {current['score']}/100
+Symbol: {coin}/USDT
+Price: ${current['price']}
+Score: {current['score']}/100
 Forces: {json.dumps(current['forces'], ensure_ascii=False)}
 Reasons: {json.dumps(current['reasons'], ensure_ascii=False)}
 
@@ -115,16 +198,16 @@ Reasons: {json.dumps(current['reasons'], ensure_ascii=False)}
 {past_str}
 
 === DECISION RULES ===
-1. Last signal < 24h ago → SKIP (too soon)
-2. Last signal OPEN in profit (+2% to +5%) → SKIP (let it run)
+1. Last signal < 48h ago → SKIP (too soon)
+2. Last signal OPEN in profit → SKIP (let it run)
 3. Last signal HIT TP1/TP2/TP3 → SKIP (already won)
 4. Last signal STOPPED and score < 65 → SKIP
-5. Last signal STOPPED, score >= 65, 7+ days passed → SEND (new setup)
+5. Last signal STOPPED, score >= 65, 7+ days passed → SEND
 6. No signal in 7+ days, score >= 50 → SEND
 7. Price went up > 10% since last signal → SKIP (missed)
-8. Price dropped > 10% since last signal + recovering → SEND if score high
+8. Price dropped > 10% + recovering + high score → SEND
 
-Context: We want HIGH QUALITY signals. Repeating same coin annoys subscribers.
+Goal: HIGH QUALITY signals. Repeating same coin annoys subscribers.
 
 Respond ONLY with JSON (no markdown):
 {{"decision": "SEND" or "SKIP", "reason": "short Persian explanation (max 20 words)"}}"""
