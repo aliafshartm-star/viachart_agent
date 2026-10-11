@@ -1,6 +1,8 @@
 """
 ViaChart Agent - مغز اصلی
-- تحلیل ۱۰۰ ارز، انتخاب ۱ ارز برتر، ارسال ۱ پست سیگنال
+- تحلیل ۱۰۰ ارز با ۵ نیرو
+- انتخاب بهترین ارز
+- ارسال سیگنال به کانال
 """
 import os
 import sys
@@ -11,7 +13,9 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from data_fetcher import get_top_symbols, get_klines
-from analysis import candles_to_df, score_coin
+from pump_detector import (
+    candles_to_df, analyze_coin, passes_filters, get_signal_tier
+)
 from chart_generator import generate_chart
 from telegram_poster import post_signal
 
@@ -22,11 +26,11 @@ STATE_FILE = "state/last_sent.json"
 os.makedirs("state", exist_ok=True)
 
 # تنظیمات
-MIN_SCORE = 40          # حداقل امتیاز برای انتخاب
-TOP_N = 1               # ← فقط ۱ ارز برتر در هر اجرا
-INTERVAL = "4h"         # تایم‌فریم
-KLINE_LIMIT = 200       # تعداد کندل
-COOLDOWN_HOURS = 12     # جلوگیری از تکرار یه ارز تا ۱۲ ساعت
+MIN_SCORE = 55              # حداقل امتیاز
+TOP_N = 1                   # تعداد سیگنال در هر اجرا
+INTERVAL = "4h"
+KLINE_LIMIT = 200
+COOLDOWN_HOURS = 12
 
 
 # ============================================================
@@ -49,7 +53,6 @@ def save_state(state):
 
 
 def is_on_cooldown(state, symbol):
-    """چک کن که آیا این ارز تازه ارسال شده"""
     last_time = state["last_sent"].get(symbol)
     if not last_time:
         return False
@@ -70,8 +73,8 @@ def mark_sent(state, symbol):
 # تحلیل ۱۰۰ ارز
 # ============================================================
 
-def analyze_top_coins(limit=100):
-    """تحلیل کامل ۱۰۰ ارز و برگرداندن لیست رتبه‌بندی‌شده"""
+def analyze_all(limit=100):
+    """تحلیل همه ارزها"""
     log.info(f"📊 شروع تحلیل {limit} ارز...")
 
     symbols = get_top_symbols(limit=limit)
@@ -88,88 +91,97 @@ def analyze_top_coins(limit=100):
                 continue
 
             df = candles_to_df(candles)
-            analysis = score_coin(df, symbol, coin)
-            analysis["interval"] = INTERVAL.upper()
+            cg_id = symbol.replace("USDT", "").lower()
 
-            results.append(analysis)
+            analysis = analyze_coin(symbol, cg_id, df, coin)
+
+            # فقط ارزهایی که فیلترها رو پاس کردن
+            if passes_filters(analysis):
+                results.append(analysis)
 
             if i % 20 == 0:
-                log.info(f"   ... {i}/{len(symbols)} ارز تحلیل شد")
+                log.info(f"   ... {i}/{len(symbols)} تحلیل شد")
 
             time.sleep(0.12)
 
         except Exception as e:
-            log.warning(f"   ⚠️ خطا در تحلیل {symbol}: {str(e)[:80]}")
+            log.warning(f"   ⚠️ خطا در {symbol}: {str(e)[:80]}")
             continue
 
-    log.info(f"✅ {len(results)} ارز تحلیل شد")
+    log.info(f"✅ {len(results)} ارز از فیلترها گذشت")
     return results
 
 
-def select_top_pick(results, state):
-    """انتخاب بهترین ارز با فیلتر امتیاز و cooldown"""
-    candidates = [r for r in results if r["score"] >= MIN_SCORE]
-    candidates = [r for r in candidates if not is_on_cooldown(state, r["symbol"])]
+def select_best(results, state):
+    """انتخاب بهترین ارز"""
+    candidates = [r for r in results if not is_on_cooldown(state, r["symbol"])]
     candidates.sort(key=lambda x: x["score"], reverse=True)
 
     if not candidates:
         return None
 
-    top_pick = candidates[0]
-    log.info(f"🎯 ارز برتر انتخاب شد: {top_pick['symbol']} — امتیاز {top_pick['score']}")
-    return top_pick
+    top = candidates[0]
+    log.info(f"🎯 ارز برتر: {top['symbol']} — امتیاز {top['score']}")
+    return top
 
 
 # ============================================================
-# اجرای اصلی
+# اجرا
 # ============================================================
 
-async def run_signals():
-    """تحلیل ۱۰۰ ارز و ارسال ۱ پست سیگنال"""
+async def run():
     log.info("=" * 50)
     log.info("🚀 شروع ViaChart Agent")
     log.info("=" * 50)
 
     state = load_state()
 
-    results = analyze_top_coins(limit=100)
+    # تحلیل
+    results = analyze_all(limit=100)
     if not results:
-        log.error("❌ لیست تحلیل خالیه")
+        log.warning("⚠️ هیچ ارزی شرایط نداشت")
         return
 
-    pick = select_top_pick(results, state)
-    if not pick:
-        log.warning("⚠️ هیچ ارزی شرایط انتخاب رو نداشت")
-        return
+    # انتخاب برترین‌ها (مرتب‌شده)
+    results.sort(key=lambda x: x["score"], reverse=True)
 
-    symbol = pick["symbol"]
-    log.info(f"\n📤 ارسال پست سیگنال برای {symbol}...")
+    log.info(f"\n🏆 ۵ ارز برتر:")
+    for r in results[:5]:
+        log.info(f"   • {r['symbol']} — {r['score']}/100 ({get_signal_tier(r['score'])})")
 
-    try:
-        chart_path = generate_chart(symbol, INTERVAL, 150, score_data=pick)
-        if not chart_path:
-            log.error("❌ چارت ساخته نشد")
-            return
+    # ارسال سیگنال‌ها
+    sent = 0
+    for pick in results:
+        if sent >= TOP_N:
+            break
 
-        ok = await post_signal(pick, chart_path)
-        if ok:
-            mark_sent(state, symbol)
-            save_state(state)
-            log.info(f"✅ ارسال موفق: {symbol}")
+        if is_on_cooldown(state, pick["symbol"]):
+            log.info(f"   ⏳ {pick['symbol']} در cooldown")
+            continue
 
-    except Exception as e:
-        log.error(f"❌ خطا در {symbol}: {e}")
+        symbol = pick["symbol"]
+        log.info(f"\n📤 ارسال سیگنال {symbol} (امتیاز {pick['score']})...")
 
+        try:
+            chart = generate_chart(symbol, INTERVAL, 150, score_data=pick)
+            ok = await post_signal(pick, chart)
 
-# ============================================================
-# نقطه ورود
-# ============================================================
+            if ok:
+                mark_sent(state, symbol)
+                save_state(state)
+                sent += 1
+                log.info(f"   ✅ ارسال موفق")
+        except Exception as e:
+            log.error(f"   ❌ خطا در {symbol}: {e}")
+
+    log.info(f"\n✅ {sent} سیگنال ارسال شد")
+
 
 def main():
     log.info("🎬 ViaChart Agent")
 
     try:
-        asyncio.run(run_signals())
+        asyncio.run(run())
         log.info("🎉 اجرا با موفقیت تمام شد")
     except Exception as e:
         log.error(f"❌ خطای کلی: {e}", exc_info=True)
