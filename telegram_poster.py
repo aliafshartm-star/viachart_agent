@@ -1,6 +1,6 @@
 """
 ساخت و ارسال سیگنال حرفه‌ای به کانال ViaChart
-- قالب سیگنال با ۵ نیرو
+۵ نیرو: Volume, Trend, News, Momentum, Regime
 """
 import os
 import logging
@@ -46,13 +46,11 @@ def _full_name(symbol):
         "SUI": "Sui", "SEI": "Sei", "INJ": "Injective",
         "TIA": "Celestia", "PEPE": "Pepe", "WIF": "dogwifhat",
         "FET": "Fetch.ai", "RNDR": "Render", "TAO": "Bittensor",
+        "MAGIC": "Magic", "RLC": "iExec", "STRK": "Starknet",
+        "CFX": "Conflux",
     }
     return mapping.get(symbol, symbol)
 
-
-# ============================================================
-# قالب سیگنال
-# ============================================================
 
 def build_signal_post(a):
     symbol_raw = a["symbol"]
@@ -75,28 +73,30 @@ def build_signal_post(a):
     # Tier
     if score >= 70:
         tier = "TIER 1 🔥"
-        tier_label = "قوی"
-    elif score >= 55:
+    elif score >= 60:
         tier = "TIER 2 🟢"
-        tier_label = "متوسط"
     else:
         tier = "TIER 3 🟡"
-        tier_label = "مشروط"
 
-    # ایموجی تغییر
     change_emoji = "📈" if change_24h >= 0 else "📉"
     change_sign = "+" if change_24h >= 0 else ""
 
-    # دلایل (حداکثر ۵ تا)
+    # دلایل (حداکثر ۵)
     reason_lines = ""
     for r in reasons[:5]:
         reason_lines += "🔹 " + r + "\n"
     if not reason_lines:
-        reason_lines = "🔹 تحلیل تکنیکال و سنتیمنت\n"
+        reason_lines = "🔹 تحلیل تکنیکال\n"
 
-    # ساخت پست
+    # نیروها
+    f1 = forces.get("volume", 0)
+    f2 = forces.get("trend", 0)
+    f3 = forces.get("news", 0)
+    f4 = forces.get("momentum", 0)
+    f5 = forces.get("regime", 0)
+
     parts = []
-    parts.append("🟢 <b>ViaChart SPOT Signal | " + symbol + "/USDT</b>")
+    parts.append("🟢 <b>ViaChart SPOT | " + symbol + "/USDT</b>")
     parts.append("")
     parts.append("🎯 امتیاز: <b>" + str(score) + "/100</b> (" + tier + ")")
     parts.append("⏰ تایم‌فریم: 1-7 روز")
@@ -121,17 +121,10 @@ def build_signal_post(a):
     parts.append("━━━━━━━━━━━━━━━")
     parts.append("📊 <b>امتیاز ۵ نیرو</b>")
     parts.append("━━━━━━━━━━━━━━━")
-
-    f1 = forces.get("volume_accumulation", 0)
-    f2 = forces.get("sector_rotation", 0)
-    f3 = forces.get("news_sentiment", 0)
-    f4 = forces.get("short_squeeze", 0)
-    f5 = forces.get("market_regime", 0)
-
-    parts.append("📈 Accumulation: " + str(f1) + "/20")
-    parts.append("🎯 Sector: " + str(f2) + "/20")
+    parts.append("📈 Volume: " + str(f1) + "/20")
+    parts.append("📊 Trend: " + str(f2) + "/20")
     parts.append("📰 News: " + str(f3) + "/20")
-    parts.append("🔥 Squeeze: " + str(f4) + "/20")
+    parts.append("🔥 Momentum: " + str(f4) + "/20")
     parts.append("🌊 Regime: " + str(f5) + "/20")
     parts.append("")
     parts.append("━━━━━━━━━━━━━━━")
@@ -144,14 +137,10 @@ def build_signal_post(a):
     parts.append("")
     parts.append("📢 " + CHANNEL_HANDLE)
     parts.append("")
-    parts.append("#ViaChart #" + symbol + " #" + full_name + " #Crypto #Spot #Signal #Analysis #Trading")
+    parts.append("#ViaChart #" + symbol + " #" + full_name + " #Crypto #Spot #Signal")
 
     return "\n".join(parts)
 
-
-# ============================================================
-# ارسال به کانال
-# ============================================================
 
 async def send_post(text, chart_path=None, disable_notification=False):
     bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
@@ -190,50 +179,8 @@ async def send_post(text, chart_path=None, disable_notification=False):
         return False
 
 
-# ============================================================
-# تابع ارسال سیگنال
-# ============================================================
-
 async def post_signal(analysis_data, chart_path=None):
     log.info(f"📝 ساخت پست سیگنال برای {analysis_data['symbol']}...")
     post = build_signal_post(analysis_data)
     log.info(f"\n{post}\n")
     return await send_post(post, chart_path=chart_path)
-
-
-# ============================================================
-# تست
-# ============================================================
-
-if __name__ == "__main__":
-    import asyncio
-    from data_fetcher import get_top_symbols, get_klines
-    from pump_detector import candles_to_df, analyze_coin, passes_filters
-    from chart_generator import generate_chart
-
-    async def test():
-        print("\n🧪 تست telegram_poster با سیگنال جدید...\n")
-
-        symbols = get_top_symbols(limit=10)
-        for s in symbols[:5]:
-            sym = s["symbol"]
-            candles = get_klines(sym, "4h", 200)
-            if not candles:
-                continue
-
-            df = candles_to_df(candles)
-            cg_id = sym.replace("USDT", "").lower()
-            analysis = analyze_coin(sym, cg_id, df, s)
-
-            if analysis["score"] < 55:
-                continue
-
-            if not passes_filters(analysis):
-                continue
-
-            print(f"\n📤 ارسال سیگنال برای {sym} (امتیاز {analysis['score']})...")
-            chart = generate_chart(sym, "4h", 150, score_data=analysis)
-            await post_signal(analysis, chart)
-            break
-
-    asyncio.run(test())
