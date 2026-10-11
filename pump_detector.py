@@ -6,8 +6,6 @@ Pump Detector — تشخیص ارزهای آماده رشد
   ۳. News & Sentiment
   ۴. Short Squeeze (Funding Rate)
   ۵. Market Regime (BTC)
-
-هر نیرو: 0-20 امتیاز → جمع 0-100
 """
 import os
 import logging
@@ -25,10 +23,6 @@ BINANCE_API = "https://data-api.binance.vision/api/v3"
 BINANCE_FUTURES = "https://fapi.binance.com/fapi/v1"
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 
-
-# ============================================================
-# ابزارهای پایه
-# ============================================================
 
 def candles_to_df(candles):
     df = pd.DataFrame(candles)
@@ -52,7 +46,6 @@ def atr(df, period=14):
 
 
 def find_swing_lows(df, lookback=5):
-    """پیدا کردن کف‌های محلی"""
     lows = []
     l = df["low"].values
     for i in range(lookback, len(df) - lookback):
@@ -62,20 +55,16 @@ def find_swing_lows(df, lookback=5):
 
 
 # ============================================================
-# نیرو ۱: Volume Accumulation + Higher Lows (0-20)
+# نیرو ۱: Volume Accumulation (0-20)
 # ============================================================
 
 def detect_volume_accumulation(df):
-    """
-    حجم آروم بالا میره + Higher Lows
-    """
     score = 0
     reasons = []
 
     if len(df) < 60:
         return 0, reasons
 
-    # --- Relative Volume (7d vs 30d) ---
     vol_7d = df["volume"].tail(42).mean()
     vol_30d = df["volume"].tail(180).mean()
     if vol_30d > 0:
@@ -87,7 +76,6 @@ def detect_volume_accumulation(df):
             score += 4
             reasons.append(f"حجم در حال افزایش ({vol_ratio:.1f}x)")
 
-    # --- Higher Lows ---
     swing_lows = find_swing_lows(df, lookback=5)
     if len(swing_lows) >= 3:
         last_3 = swing_lows[-3:]
@@ -95,7 +83,6 @@ def detect_volume_accumulation(df):
             score += 8
             reasons.append("ساختار Higher Lows صعودی")
 
-    # --- Higher Lows تازه (5 کندل اخیر) ---
     recent_low = df["low"].tail(5).min()
     prev_low = df["low"].tail(30).head(25).min()
     if recent_low > prev_low * 1.01:
@@ -113,7 +100,6 @@ _sector_cache = {"data": None, "time": 0}
 
 
 def get_sector_performance():
-    """عملکرد سکتورها از CoinGecko (Cache ۱ ساعت)"""
     now = time.time()
     if _sector_cache["data"] and (now - _sector_cache["time"]) < 3600:
         return _sector_cache["data"]
@@ -139,14 +125,11 @@ def get_sector_performance():
         _sector_cache["time"] = now
         return result
     except Exception as e:
-        log.warning(f"خطا در دریافت سکتورها: {e}")
+        log.warning(f"خطا در سکتورها: {e}")
         return {}
 
 
 def detect_sector_rotation(df, cg_id):
-    """
-    اگه سکتور داغه ولی این کوین lag کرده → امتیاز
-    """
     score = 0
     reasons = []
 
@@ -154,12 +137,10 @@ def detect_sector_rotation(df, cg_id):
     if not sectors or not cg_id:
         return 0, reasons
 
-    # سکتورهای داغ (بیشتر از +5%)
     hot_sectors = {k: v for k, v in sectors.items() if v > 5}
     if not hot_sectors:
         return 0, reasons
 
-    # mapping کوین → سکتور
     coin_sectors = {
         "btc": ["bitcoin", "layer 1"],
         "eth": ["ethereum", "smart contract", "layer 1"],
@@ -194,7 +175,6 @@ def detect_sector_rotation(df, cg_id):
         "tia": ["celestia", "modular"],
     }
 
-    # چک کن سکتور این کوین داغه
     for sector_name, sector_change in hot_sectors.items():
         coin_sector_list = coin_sectors.get(cg_id, [])
 
@@ -233,7 +213,6 @@ _news_cache = {"data": None, "time": 0}
 
 
 def get_news():
-    """اخبار از CoinDesk RSS"""
     now = time.time()
     if _news_cache["data"] and (now - _news_cache["time"]) < 600:
         return _news_cache["data"]
@@ -255,7 +234,6 @@ def get_news():
 
 
 def detect_news_sentiment(symbol):
-    """اگه اخبار مهم درباره این کوین باشه → امتیاز"""
     score = 0
     reasons = []
 
@@ -307,11 +285,10 @@ def detect_news_sentiment(symbol):
 
 
 # ============================================================
-# نیرو ۴: Short Squeeze / Funding Rate (0-20)
+# نیرو ۴: Short Squeeze (0-20)
 # ============================================================
 
 def get_funding_rate(symbol):
-    """دریافت Funding Rate از Binance Futures"""
     try:
         url = f"{BINANCE_FUTURES}/premiumIndex"
         r = requests.get(url, params={"symbol": symbol}, timeout=10)
@@ -324,7 +301,6 @@ def get_funding_rate(symbol):
 
 
 def detect_short_squeeze(symbol):
-    """اگه Funding منفی باشه → Short ها فشرده"""
     score = 0
     reasons = []
 
@@ -336,7 +312,7 @@ def detect_short_squeeze(symbol):
 
     if fr_pct < -0.05:
         score += 15
-        reasons.append(f"Funding خیلی منفی ({fr_pct:.3f}%) — Short ها فشرده")
+        reasons.append(f"Funding خیلی منفی ({fr_pct:.3f}%)")
     elif fr_pct < -0.01:
         score += 10
         reasons.append(f"Funding منفی ({fr_pct:.3f}%)")
@@ -351,7 +327,6 @@ def detect_short_squeeze(symbol):
 # ============================================================
 
 def get_btc_regime():
-    """وضعیت BTC"""
     try:
         url = f"{BINANCE_API}/ticker/24hr"
         r = requests.get(url, params={"symbol": "BTCUSDT"}, timeout=10)
@@ -367,7 +342,6 @@ def get_btc_regime():
 
 
 def detect_market_regime():
-    """BTC 24h و وضعیت کلی"""
     score = 0
     reasons = []
 
@@ -386,7 +360,6 @@ def detect_market_regime():
         score -= 5
         reasons.append(f"BTC نزولی ({change:+.1f}%)")
 
-    # Fear & Greed
     try:
         r = requests.get("https://api.alternative.me/fng/", timeout=10)
         data = r.json()
@@ -406,11 +379,10 @@ def detect_market_regime():
 
 
 # ============================================================
-# امتیازدهی نهایی
+# تحلیل کامل
 # ============================================================
 
 def analyze_coin(symbol, cg_id, df, ticker_info):
-    """تحلیل کامل یه ارز با ۵ نیرو"""
     forces = {}
     all_reasons = []
 
@@ -438,12 +410,14 @@ def analyze_coin(symbol, cg_id, df, ticker_info):
 
     price = df["close"].iloc[-1]
     atr_val = atr(df).iloc[-1]
+
+    # سطوح جدید (R:R بهتر)
     entry_low = price * 0.995
     entry_high = price * 1.005
-    stop = price * 0.95
-    tp1 = price * 1.05
-    tp2 = price * 1.12
-    tp3 = price * 1.25
+    stop = price * 0.95           # -5%
+    tp1 = price * 1.075           # +7.5%
+    tp2 = price * 1.15            # +15%
+    tp3 = price * 1.30            # +30%
 
     return {
         "symbol": symbol,
@@ -466,11 +440,10 @@ def analyze_coin(symbol, cg_id, df, ticker_info):
 
 
 # ============================================================
-# فیلترهای اجباری
+# فیلترها
 # ============================================================
 
 def passes_filters(coin):
-    """چک فیلترهای اجباری"""
     if coin["volume_24h"] < 20_000_000:
         return False
     if coin["change_24h"] > 8:
@@ -478,9 +451,10 @@ def passes_filters(coin):
     if coin["change_24h"] < -15:
         return False
 
-    risk = (coin["entry_high"] - coin["stop"]) / coin["entry_high"]
-    reward = (coin["tp1"] - coin["entry_high"]) / coin["entry_high"]
-    if risk > 0 and (reward / risk) < 1.5:
+    entry_mid = (coin["entry_low"] + coin["entry_high"]) / 2
+    risk = (entry_mid - coin["stop"]) / entry_mid
+    reward = (coin["tp1"] - entry_mid) / entry_mid
+    if risk > 0 and (reward / risk) < 1.4:
         return False
 
     return True
