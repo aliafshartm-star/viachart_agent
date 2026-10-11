@@ -113,16 +113,12 @@ _sector_cache = {"data": None, "time": 0}
 
 
 def get_sector_performance():
-    """
-    عملکرد سکتورها از CoinGecko
-    Cache برای ۱ ساعت
-    """
+    """عملکرد سکتورها از CoinGecko (Cache ۱ ساعت)"""
     now = time.time()
     if _sector_cache["data"] and (now - _sector_cache["time"]) < 3600:
         return _sector_cache["data"]
 
     try:
-        # CoinGecko categories
         url = f"{COINGECKO_API}/coins/categories"
         r = requests.get(url, timeout=15)
         if r.status_code != 200:
@@ -130,11 +126,14 @@ def get_sector_performance():
 
         cats = r.json()
         result = {}
-        for cat in cats[:30]:
+        for cat in cats[:40]:
             name = cat.get("name", "").lower()
             change = cat.get("market_cap_change_24h") or 0
             if name and change:
-                result[name] = float(change)
+                try:
+                    result[name] = float(change)
+                except Exception:
+                    pass
 
         _sector_cache["data"] = result
         _sector_cache["time"] = now
@@ -155,25 +154,72 @@ def detect_sector_rotation(df, cg_id):
     if not sectors or not cg_id:
         return 0, reasons
 
-    # چک کن کدوم سکتورها داغن
-    hot_sectors = {k: v for k, v in sectors.items() if v > 8}
+    # سکتورهای داغ (بیشتر از +5%)
+    hot_sectors = {k: v for k, v in sectors.items() if v > 5}
     if not hot_sectors:
         return 0, reasons
 
-    # چک کن این کوین تو یه سکتور داغه؟ (تقریبی)
+    # mapping کوین → سکتور
+    coin_sectors = {
+        "btc": ["bitcoin", "layer 1"],
+        "eth": ["ethereum", "smart contract", "layer 1"],
+        "sol": ["solana", "layer 1"],
+        "bnb": ["bnb", "exchange"],
+        "ada": ["cardano", "layer 1"],
+        "avax": ["avalanche", "layer 1"],
+        "dot": ["polkadot", "layer 1"],
+        "matic": ["polygon", "layer 2"],
+        "arb": ["arbitrum", "layer 2"],
+        "op": ["optimism", "layer 2"],
+        "link": ["chainlink", "oracle", "defi"],
+        "uni": ["uniswap", "defi", "dex"],
+        "aave": ["aave", "defi"],
+        "doge": ["dogecoin", "meme"],
+        "shib": ["shiba", "meme"],
+        "pepe": ["pepe", "meme"],
+        "wif": ["dogwifhat", "meme"],
+        "inj": ["injective", "defi"],
+        "near": ["near", "ai", "layer 1"],
+        "fet": ["fetch", "ai"],
+        "rndr": ["render", "ai"],
+        "tao": ["bittensor", "ai"],
+        "grt": ["graph", "ai", "infrastructure"],
+        "atom": ["cosmos", "layer 1"],
+        "xrp": ["ripple", "payments"],
+        "ltc": ["litecoin", "payments"],
+        "ton": ["toncoin", "layer 1"],
+        "sui": ["sui", "layer 1"],
+        "apt": ["aptos", "layer 1"],
+        "sei": ["sei", "layer 1"],
+        "tia": ["celestia", "modular"],
+    }
+
+    # چک کن سکتور این کوین داغه
     for sector_name, sector_change in hot_sectors.items():
-        if sector_name in cg_id.lower() or cg_id.lower() in sector_name:
-            # کوین تو سکتور داغه
+        coin_sector_list = coin_sectors.get(cg_id, [])
+
+        match = False
+        for cs in coin_sector_list:
+            if cs in sector_name or sector_name in cs:
+                match = True
+                break
+
+        if cg_id in sector_name or sector_name in cg_id:
+            match = True
+
+        if match:
             coin_change = (df["close"].iloc[-1] / df["close"].iloc[-7]) - 1
             coin_change_pct = coin_change * 100
-
             gap = sector_change - coin_change_pct
+
             if gap > 10:
                 score += 15
-                reasons.append(f"سکتور {sector_name} داغه (+{sector_change:.0f}%) ولی کوین lag کرده")
+                reasons.append(f"سکتور داغ (+{sector_change:.0f}%) ولی کوین lag کرده")
             elif gap > 5:
-                score += 8
-                reasons.append(f"سکتور {sector_name} فعاله")
+                score += 10
+                reasons.append(f"سکتور {sector_name} فعال (+{sector_change:.0f}%)")
+            else:
+                score += 5
             break
 
     return min(20, score), reasons
@@ -209,9 +255,7 @@ def get_news():
 
 
 def detect_news_sentiment(symbol):
-    """
-    اگه اخبار مهم درباره این کوین باشه → امتیاز
-    """
+    """اگه اخبار مهم درباره این کوین باشه → امتیاز"""
     score = 0
     reasons = []
 
@@ -219,10 +263,8 @@ def detect_news_sentiment(symbol):
     if not news:
         return 0, reasons
 
-    # اسم کوین (بدون USDT)
     coin = symbol.replace("USDT", "").upper()
 
-    # کلمات کلیدی
     keywords = {
         "BTC": ["bitcoin", "btc"],
         "ETH": ["ethereum", "eth"],
@@ -231,8 +273,6 @@ def detect_news_sentiment(symbol):
         "XRP": ["ripple", "xrp"],
     }
 
-    search_terms = keywords.get(coin, [coin.lower()])
-    # اضافه کردن اسم کامل کوین از mapping ساده
     name_map = {
         "ARB": ["arbitrum"], "OP": ["optimism"], "APT": ["aptos"],
         "INJ": ["injective"], "SUI": ["sui"], "SEI": ["sei"],
@@ -240,7 +280,8 @@ def detect_news_sentiment(symbol):
         "DOT": ["polkadot"], "LINK": ["chainlink"], "MATIC": ["polygon"],
         "DOGE": ["dogecoin"], "ADA": ["cardano"],
     }
-    search_terms = search_terms + name_map.get(coin, [])
+
+    search_terms = keywords.get(coin, [coin.lower()]) + name_map.get(coin, [])
 
     matches = 0
     for n in news:
@@ -255,7 +296,6 @@ def detect_news_sentiment(symbol):
         score += 8
         reasons.append(f"خبر مرتبط: {matches} مورد")
 
-    # کلمات کلیدی مهم
     hot_words = ["etf", "listing", "partnership", "upgrade", "launch"]
     for n in news[:5]:
         title_lower = n["title"].lower()
@@ -284,9 +324,7 @@ def get_funding_rate(symbol):
 
 
 def detect_short_squeeze(symbol):
-    """
-    اگه Funding منفی باشه → Short فروشنده‌ها زیاده → Squeeze در راه
-    """
+    """اگه Funding منفی باشه → Short ها فشرده"""
     score = 0
     reasons = []
 
@@ -329,9 +367,7 @@ def get_btc_regime():
 
 
 def detect_market_regime():
-    """
-    BTC 24h و وضعیت کلی
-    """
+    """BTC 24h و وضعیت کلی"""
     score = 0
     reasons = []
 
@@ -374,40 +410,32 @@ def detect_market_regime():
 # ============================================================
 
 def analyze_coin(symbol, cg_id, df, ticker_info):
-    """
-    تحلیل کامل یه ارز با ۵ نیرو
-    """
+    """تحلیل کامل یه ارز با ۵ نیرو"""
     forces = {}
     all_reasons = []
 
-    # نیرو ۱
     s1, r1 = detect_volume_accumulation(df)
     forces["volume_accumulation"] = s1
     all_reasons.extend(r1)
 
-    # نیرو ۲
     s2, r2 = detect_sector_rotation(df, cg_id)
     forces["sector_rotation"] = s2
     all_reasons.extend(r2)
 
-    # نیرو ۳
     s3, r3 = detect_news_sentiment(symbol)
     forces["news_sentiment"] = s3
     all_reasons.extend(r3)
 
-    # نیرو ۴
     s4, r4 = detect_short_squeeze(symbol)
     forces["short_squeeze"] = s4
     all_reasons.extend(r4)
 
-    # نیرو ۵
     s5, r5 = detect_market_regime()
     forces["market_regime"] = s5
     all_reasons.extend(r5)
 
     total = sum(forces.values())
 
-    # سطوح
     price = df["close"].iloc[-1]
     atr_val = atr(df).iloc[-1]
     entry_low = price * 0.995
@@ -450,7 +478,6 @@ def passes_filters(coin):
     if coin["change_24h"] < -15:
         return False
 
-    # R:R
     risk = (coin["entry_high"] - coin["stop"]) / coin["entry_high"]
     reward = (coin["tp1"] - coin["entry_high"]) / coin["entry_high"]
     if risk > 0 and (reward / risk) < 1.5:
