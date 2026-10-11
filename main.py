@@ -149,4 +149,44 @@ async def run():
     for r in results[:5]:
         log.info(f"   • {r['symbol']} — {r['score']}/100 ({get_signal_tier(r['score'])})")
 
-    # ار
+    # ارسال سیگنال‌ها
+    sent = 0
+    for pick in results:
+        if sent >= TOP_N:
+            break
+
+        if is_on_cooldown(state, pick["symbol"]):
+            log.info(f"   ⏳ {pick['symbol']} در cooldown")
+            continue
+
+        symbol = pick["symbol"]
+        log.info(f"\n📤 ارسال سیگنال {symbol} (امتیاز {pick['score']})...")
+
+        try:
+            chart = generate_chart(symbol, INTERVAL, 150, score_data=pick)
+            ok = await post_signal(pick, chart)
+
+            if ok:
+                mark_sent(state, symbol)
+                save_state(state)
+                sent += 1
+                log.info(f"   ✅ ارسال موفق")
+        except Exception as e:
+            log.error(f"   ❌ خطا در {symbol}: {e}")
+
+    log.info(f"\n✅ {sent} سیگنال ارسال شد")
+
+
+def main():
+    log.info("🎬 ViaChart Agent")
+
+    try:
+        asyncio.run(run())
+        log.info("🎉 اجرا با موفقیت تمام شد")
+    except Exception as e:
+        log.error(f"❌ خطای کلی: {e}", exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
