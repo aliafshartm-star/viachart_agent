@@ -23,7 +23,8 @@ STATE_FILE = "state/last_sent.json"
 DAILY_FILE = "state/daily_count.json"
 os.makedirs("state", exist_ok=True)
 
-MIN_SCORE = 65
+# تنظیمات - قابل تغییر
+MIN_SCORE = 45
 MAX_DAILY_SIGNALS = 3
 COOLDOWN_HOURS = 24
 TOP_SCAN = 30
@@ -105,8 +106,8 @@ def analyze_all(limit=TOP_SCAN):
 
             analysis = analyze_coin(symbol, cg_id, df, coin)
 
-            if passes_filters(analysis):
-                results.append(analysis)
+            # ثبت همه ارزها با امتیازشون (حتی اگه فیلتر رو نگذرن)
+            results.append(analysis)
 
             if i % 10 == 0:
                 log.info(f"   ... {i}/{len(symbols)}")
@@ -117,7 +118,6 @@ def analyze_all(limit=TOP_SCAN):
             log.warning(f"   ⚠️ {symbol}: {str(e)[:60]}")
             continue
 
-    log.info(f"✅ {len(results)} ارز از فیلترها گذشت")
     return results
 
 
@@ -130,17 +130,32 @@ async def run():
     log.info(f"📊 سیگنال‌های امروز: {daily['count']}/{MAX_DAILY_SIGNALS}")
 
     if daily["count"] >= MAX_DAILY_SIGNALS:
-        log.info("✋ به سقف روزانه رسیدیم. سیگنال جدید ارسال نمیشه.")
+        log.info("✋ به سقف روزانه رسیدیم.")
         return
 
     state = load_state()
 
-    results = analyze_all()
-    if not results:
-        log.warning("⚠️ هیچ ارزی شرایط نداشت")
+    all_results = analyze_all()
+    if not all_results:
+        log.warning("⚠️ هیچ ارزی تحلیل نشد")
         return
 
-    tier1 = [r for r in results if r["score"] >= MIN_SCORE]
+    # ==== گزارش همه امتیازها ====
+    log.info("")
+    log.info("📊 امتیاز همه ارزها (مرتب‌شده):")
+    sorted_all = sorted(all_results, key=lambda x: x["score"], reverse=True)
+    for r in sorted_all[:15]:
+        tier = get_signal_tier(r["score"])
+        log.info(f"   • {r['symbol']:12s} — {r['score']:3d}/100  [{tier}]")
+
+    # ==== فیلترها ====
+    passed = [r for r in all_results if passes_filters(r)]
+    log.info("")
+    log.info(f"✅ {len(passed)} ارز از فیلترها گذشت")
+
+    # ==== امتیازهای قابل قبول ====
+    tier1 = [r for r in passed if r["score"] >= MIN_SCORE]
+    log.info(f"🎯 {len(tier1)} ارز امتیاز ≥ {MIN_SCORE} دارن")
 
     if not tier1:
         log.info(f"😐 هیچ سیگنال قوی‌ای (امتیاز ≥ {MIN_SCORE}) پیدا نشد")
@@ -148,10 +163,11 @@ async def run():
 
     tier1.sort(key=lambda x: x["score"], reverse=True)
 
-    log.info(f"\n🏆 {len(tier1)} سیگنال TIER 1:")
+    log.info(f"\n🏆 بهترین‌ها:")
     for r in tier1[:5]:
         log.info(f"   • {r['symbol']} — {r['score']}/100")
 
+    # ==== ارسال ====
     sent = 0
     for pick in tier1:
         if daily["count"] + sent >= MAX_DAILY_SIGNALS:
