@@ -1,9 +1,5 @@
 """
 ViaChart Agent - مغز اصلی
-- تحلیل ۳۰ ارز برتر
-- فقط سیگنال‌های قوی (TIER 1)
-- حداکثر ۳ سیگنال در روز
-- Cooldown 24 ساعته
 """
 import os
 import sys
@@ -27,18 +23,13 @@ STATE_FILE = "state/last_sent.json"
 DAILY_FILE = "state/daily_count.json"
 os.makedirs("state", exist_ok=True)
 
-# تنظیمات
-MIN_SCORE = 65              # فقط سیگنال‌های قوی
-MAX=
-_DAILY_SIGNALS = 3       # حداکثر ۳ سیگنال در روز
-COOLDOWN_HOURS = 24         # هر ارز ۲۴ ساعت یک بار
-TOP_SCAN = 30               # ۳۰ ارز برتر
+MIN_SCORE = 65
+MAX_DAILY_SIGNALS = 3
+COOLDOWN_HOURS = 24
+TOP_SCAN = 30
 INTERVAL = "4h"
 KLINE_LIMIT = 200
 
-
-# ===========================================================# مدیریت State
-# ============================================================
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -56,13 +47,12 @@ def save_state(state):
 
 
 def load_daily_count():
-    """چند سیگنال امروز فرستادیم"""
     if os.path.exists(DAILY_FILE):
         try:
             with open(DAILY_FILE, "r") as f:
                 data = json.load(f)
-                # چک کن تاریخ همون امروزه
-                if data.get("date") == datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                if data.get("date") == today:
                     return data
         except Exception:
             pass
@@ -93,10 +83,6 @@ def is_on_cooldown(state, symbol):
 def mark_sent(state, symbol):
     state["last_sent"][symbol] = datetime.now(timezone.utc).isoformat()
 
-
-# ============================================================
-# تحلیل
-# ============================================================
 
 def analyze_all(limit=TOP_SCAN):
     log.info(f"📊 تحلیل {limit} ارز برتر...")
@@ -135,16 +121,11 @@ def analyze_all(limit=TOP_SCAN):
     return results
 
 
-# ============================================================
-# اجرا
-# ============================================================
-
 async def run():
     log.info("=" * 50)
     log.info("🚀 ViaChart Agent")
     log.info("=" * 50)
 
-    # چک روزانه
     daily = load_daily_count()
     log.info(f"📊 سیگنال‌های امروز: {daily['count']}/{MAX_DAILY_SIGNALS}")
 
@@ -154,27 +135,23 @@ async def run():
 
     state = load_state()
 
-    # تحلیل
     results = analyze_all()
     if not results:
         log.warning("⚠️ هیچ ارزی شرایط نداشت")
         return
 
-    # فقط TIER 1
     tier1 = [r for r in results if r["score"] >= MIN_SCORE]
 
     if not tier1:
         log.info(f"😐 هیچ سیگنال قوی‌ای (امتیاز ≥ {MIN_SCORE}) پیدا نشد")
         return
 
-    # مرتب‌سازی
     tier1.sort(key=lambda x: x["score"], reverse=True)
 
     log.info(f"\n🏆 {len(tier1)} سیگنال TIER 1:")
     for r in tier1[:5]:
         log.info(f"   • {r['symbol']} — {r['score']}/100")
 
-    # ارسال (تا سقف روزانه)
     sent = 0
     for pick in tier1:
         if daily["count"] + sent >= MAX_DAILY_SIGNALS:
@@ -198,13 +175,11 @@ async def run():
                 sent += 1
                 log.info(f"   ✅ ارسال موفق")
 
-                # تاخیر بین سیگنال‌ها
                 if sent < MAX_DAILY_SIGNALS:
                     await asyncio.sleep(30)
         except Exception as e:
             log.error(f"   ❌ {symbol}: {e}")
 
-    # آپدیت شمارنده
     if sent > 0:
         daily["count"] += sent
         save_daily_count(daily)
