@@ -1,5 +1,8 @@
 """
 ViaChart Agent - مغز اصلی
+- هر ارزی که امتیاز ≥ 50 بگیره → سیگنال
+- Cooldown 24h (هر ارز یک بار در روز)
+- بدون سقف روزانه
 """
 import os
 import sys
@@ -20,17 +23,20 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
 STATE_FILE = "state/last_sent.json"
-DAILY_FILE = "state/daily_count.json"
 os.makedirs("state", exist_ok=True)
 
 # تنظیمات
-MIN_SCORE = 45
-MAX_DAILY_SIGNALS = 3
-COOLDOWN_HOURS = 24
-TOP_SCAN = 30
+MIN_SCORE = 50           # آستانه سیگنال
+COOLDOWN_HOURS = 24      # هر ارز ۲۴ ساعت یک بار
+TOP_SCAN = 100           # ۱۰۰ ارز برتر
 INTERVAL = "4h"
 KLINE_LIMIT = 200
+SEND_DELAY = 20          # تاخیر بین ارسال‌ها
 
+
+# ============================================================
+# State Management
+# ============================================================
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -45,27 +51,6 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
-
-
-def load_daily_count():
-    if os.path.exists(DAILY_FILE):
-        try:
-            with open(DAILY_FILE, "r") as f:
-                data = json.load(f)
-                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                if data.get("date") == today:
-                    return data
-        except Exception:
-            pass
-    return {
-        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        "count": 0
-    }
-
-
-def save_daily_count(data):
-    with open(DAILY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
 
 
 def is_on_cooldown(state, symbol):
@@ -85,10 +70,14 @@ def mark_sent(state, symbol):
     state["last_sent"][symbol] = datetime.now(timezone.utc).isoformat()
 
 
-def analyze_all(limit=TOP_SCAN):
-    log.info(f"📊 تحلیل {limit} ارز برتر...")
+# ============================================================
+# تحلیل
+# ============================================================
 
-    # BTC رو یه بار بگیر برای RS
+def analyze_all(limit=TOP_SCAN):
+    log.info(f"📊 تحلیل {limit} ارز...")
+
+    # BTC برای RS
     btc_candles = get_klines("BTCUSDT", INTERVAL, KLINE_LIMIT)
     btc_df = candles_to_df(btc_candles) if btc_candles else None
 
@@ -111,10 +100,10 @@ def analyze_all(limit=TOP_SCAN):
             analysis = analyze_coin(symbol, cg_id, df, coin, btc_df=btc_df)
             results.append(analysis)
 
-            if i % 10 == 0:
+            if i % 20 == 0:
                 log.info(f"   ... {i}/{len(symbols)}")
 
-            time.sleep(0.1)
+            time.sleep(0.08)
 
         except Exception as e:
             log.warning(f"   ⚠️ {symbol}: {str(e)[:60]}")
@@ -123,69 +112,53 @@ def analyze_all(limit=TOP_SCAN):
     return results
 
 
+# ============================================================
+# اجرا
+# ============================================================
+
 async def run():
     log.info("=" * 50)
     log.info("🚀 ViaChart Agent")
     log.info("=" * 50)
 
-    daily = load_daily_count()
-    log.info(f"📊 سیگنال‌های امروز: {daily['count']}/{MAX_DAILY_SIGNALS}")
-
-    if daily["count"] >= MAX_DAILY_SIGNALS:
-        log.info("✋ به سقف روزانه رسیدیم.")
-        return
-
     state = load_state()
 
+    # تحلیل همه ارزها
     all_results = analyze_all()
     if not all_results:
         log.warning("⚠️ هیچ ارزی تحلیل نشد")
         return
 
-    # گزارش ۱۵ ارز برتر
-    log.info("")
-    log.info("📊 امتیاز ارزها (مرتب‌شده):")
-    sorted_all = sorted(all_results, key=lambda x: x["score"], reverse=True)
-    for r in sorted_all[:15]:
-        tier = get_signal_tier(r["score"])
-        f = r.get("forces", {})
-        log.info(
-            f"   • {r['symbol']:12s} — {r['score']:3d}/100 [{tier:11s}] "
-            f"V:{f.get('volume',0):2d} T:{f.get('trend',0):2d} "
-            f"N:{f.get('news',0):2d} M:{f.get('momentum',0):2d} R:{f.get('regime',0):2d}"
-        )
-
     # فیلترها
     passed = [r for r in all_results if passes_filters(r)]
-    log.info("")
     log.info(f"✅ {len(passed)} ارز از فیلترها گذشت")
 
-    # آستانه
-    tier1 = [r for r in passed if r["score"] >= MIN_SCORE]
-    log.info(f"🎯 {len(tier1)} ارز امتیاز ≥ {MIN_SCORE} دارن")
+    # امتیاز ≥ MIN_SCORE
+    candidates = [r for r in passed if r["score"] >= MIN_SCORE]
+    candidates.sort(key=lambda x: x["score"], reverse=True)
 
-    if not tier1:
-        log.info(f"😐 هیچ سیگنال قوی‌ای پیدا نشد")
+    log.info(f"🎯 {len(candidates)} ارز امتیاز ≥ {MIN_SCORE}")
+
+    if not candidates:
+        log.info(f"😐 هیچ سیگنالی نبود")
         return
 
-    tier1.sort(key=lambda x: x["score"], reverse=True)
-
+    # نمایش ۱۰ تای برتر
     log.info(f"\n🏆 بهترین‌ها:")
-    for r in tier1[:5]:
-        log.info(f"   • {r['symbol']} — {r['score']}/100")
+    for r in candidates[:10]:
+        log.info(f"   • {r['symbol']:12s} — {r['score']:3d}/100")
 
+    # ========= ارسال =========
     sent = 0
-    for pick in tier1:
-        if daily["count"] + sent >= MAX_DAILY_SIGNALS:
-            log.info("✋ سقف روزانه پر شد")
-            break
-
+    for pick in candidates:
+        # چک cooldown
         if is_on_cooldown(state, pick["symbol"]):
             log.info(f"   ⏳ {pick['symbol']} در cooldown")
             continue
 
         symbol = pick["symbol"]
-        log.info(f"\n📤 ارسال {symbol} (امتیاز {pick['score']})...")
+        score = pick["score"]
+        log.info(f"\n📤 ارسال {symbol} ({score}/100)...")
 
         try:
             chart = generate_chart(symbol, INTERVAL, 150, score_data=pick)
@@ -197,15 +170,10 @@ async def run():
                 sent += 1
                 log.info(f"   ✅ ارسال موفق")
 
-                if sent < MAX_DAILY_SIGNALS:
-                    await asyncio.sleep(30)
+                # تاخیر بین ارسال‌ها
+                await asyncio.sleep(SEND_DELAY)
         except Exception as e:
             log.error(f"   ❌ {symbol}: {e}")
-
-    if sent > 0:
-        daily["count"] += sent
-        save_daily_count(daily)
-        log.info(f"\n📊 سیگنال‌های امروز: {daily['count']}/{MAX_DAILY_SIGNALS}")
 
     log.info(f"\n✅ {sent} سیگنال ارسال شد")
 
