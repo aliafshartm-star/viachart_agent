@@ -1,7 +1,7 @@
 """
 ViaChart Agent - مغز اصلی
 - تحلیل ۱۰۰ ارز
-- AI Judge تصمیم می‌گیره هر سیگنال بفرسته یا نه
+- Signal Brain تصمیم می‌گیره (بدون AI)
 """
 import os
 import sys
@@ -15,8 +15,8 @@ from pump_detector import (
 )
 from chart_generator import generate_chart
 from telegram_poster import post_signal
-from signal_history import add_signal, build_context_for_ai
-from ai_judge import ask_ai_judge
+from signal_history import add_signal, get_all_signals, update_result
+from signal_brain import should_send
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -46,12 +46,15 @@ def analyze_all(limit=TOP_SCAN):
             candles = get_klines(symbol, INTERVAL, KLINE_LIMIT)
             if not candles or len(candles) < 60:
                 continue
+
             df = candles_to_df(candles)
             cg_id = symbol.replace("USDT", "").lower()
             analysis = analyze_coin(symbol, cg_id, df, coin, btc_df=btc_df)
             results.append(analysis)
+
             if i % 20 == 0:
                 log.info(f"   ... {i}/{len(symbols)}")
+
             time.sleep(0.08)
         except Exception as e:
             log.warning(f"   ⚠️ {symbol}: {str(e)[:60]}")
@@ -89,19 +92,25 @@ async def run():
     sent = 0
     for pick in candidates:
         symbol = pick["symbol"]
-        log.info(f"\n🤖 بررسی {symbol} با AI Judge...")
+        log.info(f"\n🧠 بررسی {symbol} با Signal Brain...")
 
-        context = build_context_for_ai(symbol, pick)
-        if context["has_history"]:
-            log.info(f"   📚 تاریخچه: {len(context['past_signals'])} سیگنال قبلی")
+        # دریافت تاریخچه
+        history = get_all_signals(symbol)
 
-        decision = ask_ai_judge(symbol, context)
-        log.info(f"   🎯 AI: {decision['decision']} — {decision['reason']}")
+        # آپدیت نتیجه آخرین سیگنال (اگه هست)
+        if history:
+            update_result(symbol, pick["price"])
+            history = get_all_signals(symbol)
+
+        # تصمیم‌گیری
+        decision = should_send(symbol, pick, history)
+        log.info(f"   🎯 نتیجه: {decision['decision']} — {decision['reason']}")
 
         if decision["decision"] != "SEND":
-            log.info(f"   ⏭️ رد شد توسط AI")
+            log.info(f"   ⏭️ رد شد")
             continue
 
+        # ارسال
         log.info(f"   📤 ارسال...")
         try:
             chart = generate_chart(symbol, INTERVAL, 150, score_data=pick)
