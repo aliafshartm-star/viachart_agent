@@ -10,8 +10,8 @@ from telegram.constants import ParseMode
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
-CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "@viachart_app")
-CHANNEL_HANDLE = "@viachart_app"
+CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "@binancesignal_ai")
+CHANNEL_HANDLE = "@binancesignal_ai"
 
 
 def _fmt(p):
