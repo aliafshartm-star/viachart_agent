@@ -10,8 +10,11 @@ from telegram.constants import ParseMode
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger(__name__)
 
+# کانال ارسال خودکار (کانال جدید) - از Secret خونده میشه
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "@binancesignal_ai")
-CHANNEL_HANDLE = "@binancesignal_ai"
+
+# یوزرنیم نمایشی پایین پست (کانال قدیمی - برند)
+CHANNEL_HANDLE = "@viachart_app"
 
 
 def _fmt(p):
@@ -65,36 +68,27 @@ def build_signal_post(a):
     ch = "📈" if change >= 0 else "📉"
     cs = "+" if change >= 0 else ""
 
-    # فقط ۲ دلیل مهم
-    reasons_text = ""
-    for r in reasons[:2]:
-        reasons_text += "• " + r + "\n"
+    # فقط ۱ دلیل مهم (فشرده)
+    reason_line = ""
+    if reasons:
+        reason_line = f"💡 {reasons[0]}"
 
     parts = [
-        f"🟢 <b>{symbol}/USDT</b> {tier} {score}/100",
-        "",
-        f"📍 {_fmt(price)} {ch} {cs}{change:.1f}%",
+        f"{tier} <b>{symbol}/USDT</b> — {score}/100",
+        f"💵 {_fmt(price)}  {ch} {cs}{change:.1f}%",
         "",
         f"🎯 ورود: {_fmt(entry_low)} - {_fmt(entry_high)}",
         f"🛑 SL: {_fmt(stop)} ({_pct(entry_high, stop)})",
-        "",
-        f"TP1 → {_fmt(tp1)} ({_pct(entry_high, tp1)})",
-        f"TP2 → {_fmt(tp2)} ({_pct(entry_high, tp2)})",
-        f"TP3 → {_fmt(tp3)} ({_pct(entry_high, tp3)})",
-        "",
+        f"✅ TP: {_fmt(tp1)} ({_pct(entry_high, tp1)}) / {_fmt(tp2)} ({_pct(entry_high, tp2)}) / {_fmt(tp3)} ({_pct(entry_high, tp3)})",
     ]
 
-    if reasons_text:
-        parts.append("💡")
-        parts.append(reasons_text.rstrip())
-        parts.append("")
+    if reason_line:
+        parts.append(reason_line)
 
     parts.extend([
-        "⚠️ فقط اسپات | ریسک ۱٪ | DYOR",
         "",
-        f"📢 {CHANNEL_HANDLE}",
-        "",
-        f"#ViaChart #{symbol} #{full_name} #Crypto #Signal #Spot #سیگنال_کریپتو #ارز_دیجیتال",
+        f"⚠️ اسپات | ریسک ۱٪ | 📢 {CHANNEL_HANDLE}",
+        f"#ViaChart #{symbol} #{full_name} #Signal",
     ])
 
     return "\n".join(parts)
@@ -140,23 +134,3 @@ async def post_signal(analysis_data, chart_path=None):
     post = build_signal_post(analysis_data)
     log.info(f"\n{post}\n")
     return await send_post(post, chart_path=chart_path)
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    async def _test():
-        log.info(f"🧪 شروع تست ارسال به کانال: {CHANNEL_ID}")
-        test_msg = (
-            "🧪 <b>تست اتصال ViaChart</b>\n\n"
-            "اگه این پیام رو می‌بینی، یعنی ربات به کانال جدید وصل شده ✅\n\n"
-            f"📢 {CHANNEL_HANDLE}"
-        )
-        ok = await send_post(test_msg)
-        if ok:
-            log.info("🎉 تست موفق بود - پیام به کانال ارسال شد")
-        else:
-            log.error("❌ تست ناموفق بود - پیام ارسال نشد")
-            raise SystemExit(1)
-
-    asyncio.run(_test())
