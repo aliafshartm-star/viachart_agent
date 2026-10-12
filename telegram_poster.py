@@ -140,3 +140,23 @@ async def post_signal(analysis_data, chart_path=None):
     post = build_signal_post(analysis_data)
     log.info(f"\n{post}\n")
     return await send_post(post, chart_path=chart_path)
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    async def _test():
+        log.info(f"🧪 شروع تست ارسال به کانال: {CHANNEL_ID}")
+        test_msg = (
+            "🧪 <b>تست اتصال ViaChart</b>\n\n"
+            "اگه این پیام رو می‌بینی، یعنی ربات به کانال جدید وصل شده ✅\n\n"
+            f"📢 {CHANNEL_HANDLE}"
+        )
+        ok = await send_post(test_msg)
+        if ok:
+            log.info("🎉 تست موفق بود - پیام به کانال ارسال شد")
+        else:
+            log.error("❌ تست ناموفق بود - پیام ارسال نشد")
+            raise SystemExit(1)
+
+    asyncio.run(_test())
